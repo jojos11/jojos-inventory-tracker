@@ -27,7 +27,7 @@ module.exports = async (req, res) => {
 
       const { data: petSnaps } = await supabase
         .from('inventory_snapshots')
-        .select('actual_bins, calculated_bins, date')
+        .select('actual_bins, calculated_bins, date, created_at')
         .eq('flavor_id', f.id)
         .eq('location_id', 1)
         .order('date', { ascending: false })
@@ -35,7 +35,7 @@ module.exports = async (req, res) => {
 
       const { data: tcSnaps } = await supabase
         .from('inventory_snapshots')
-        .select('actual_bins, calculated_bins, date')
+        .select('actual_bins, calculated_bins, date, created_at')
         .eq('flavor_id', f.id)
         .eq('location_id', 2)
         .order('date', { ascending: false })
@@ -46,32 +46,32 @@ module.exports = async (req, res) => {
 
       if (petSnap) {
         petBins = Number(petSnap.actual_bins) || Number(petSnap.calculated_bins) || 0;
-        const sd = petSnap.date;
+        const snapTime = petSnap.created_at; // Use timestamp, not date
 
-        const { data: prod } = await supabase.from('production_logs').select('batches').eq('flavor_id', f.id).gt('date', sd);
+        const { data: prod } = await supabase.from('production_logs').select('batches').eq('flavor_id', f.id).gt('created_at', snapTime);
         if (prod) for (const p of prod) petBins += (Number(p.batches) * f.batch_size_cookies) / f.bin_capacity_cookies;
 
-        const { data: ps } = await supabase.from('sales').select('quantity_sold').eq('flavor_id', f.id).eq('location_id', 1).gt('date', sd);
+        const { data: ps } = await supabase.from('sales').select('quantity_sold').eq('flavor_id', f.id).eq('location_id', 1).gt('synced_at', snapTime);
         if (ps) for (const s of ps) petBins -= Number(s.quantity_sold) / f.bin_capacity_cookies;
 
-        const { data: tout } = await supabase.from('transfers').select('bins').eq('flavor_id', f.id).eq('from_location_id', 1).gt('date', sd);
+        const { data: tout } = await supabase.from('transfers').select('bins').eq('flavor_id', f.id).eq('from_location_id', 1).gt('created_at', snapTime);
         if (tout) for (const t of tout) petBins -= Number(t.bins);
 
-        const { data: tin } = await supabase.from('transfers').select('bins').eq('flavor_id', f.id).eq('to_location_id', 1).gt('date', sd);
+        const { data: tin } = await supabase.from('transfers').select('bins').eq('flavor_id', f.id).eq('to_location_id', 1).gt('created_at', snapTime);
         if (tin) for (const t of tin) petBins += Number(t.bins);
       }
 
       if (tcSnap) {
         tcBins = Number(tcSnap.actual_bins) || Number(tcSnap.calculated_bins) || 0;
-        const sd = tcSnap.date;
+        const snapTime = tcSnap.created_at;
 
-        const { data: ts } = await supabase.from('sales').select('quantity_sold').eq('flavor_id', f.id).eq('location_id', 2).gt('date', sd);
+        const { data: ts } = await supabase.from('sales').select('quantity_sold').eq('flavor_id', f.id).eq('location_id', 2).gt('synced_at', snapTime);
         if (ts) for (const s of ts) tcBins -= Number(s.quantity_sold) / f.bin_capacity_cookies;
 
-        const { data: tout } = await supabase.from('transfers').select('bins').eq('flavor_id', f.id).eq('from_location_id', 2).gt('date', sd);
+        const { data: tout } = await supabase.from('transfers').select('bins').eq('flavor_id', f.id).eq('from_location_id', 2).gt('created_at', snapTime);
         if (tout) for (const t of tout) tcBins -= Number(t.bins);
 
-        const { data: tin } = await supabase.from('transfers').select('bins').eq('flavor_id', f.id).eq('to_location_id', 2).gt('date', sd);
+        const { data: tin } = await supabase.from('transfers').select('bins').eq('flavor_id', f.id).eq('to_location_id', 2).gt('created_at', snapTime);
         if (tin) for (const t of tin) tcBins += Number(t.bins);
       }
 
