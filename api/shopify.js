@@ -47,9 +47,25 @@ const BOX_PRODUCTS = {
 };
 
 async function fetchShopifyOrders(since) {
-  const token = process.env.SHOPIFY_ACCESS_TOKEN || process.env.SHOPIFY_CLIENT_SECRET;
   const domain = process.env.SHOPIFY_STORE_DOMAIN;
-  if (!token || !domain) throw new Error('Missing SHOPIFY_ACCESS_TOKEN (or SHOPIFY_CLIENT_SECRET) and SHOPIFY_STORE_DOMAIN env vars');
+  const clientId = process.env.SHOPIFY_CLIENT_ID;
+  const clientSecret = process.env.SHOPIFY_CLIENT_SECRET;
+  if (!domain || !clientId || !clientSecret) throw new Error('Missing SHOPIFY_STORE_DOMAIN, SHOPIFY_CLIENT_ID, or SHOPIFY_CLIENT_SECRET env vars');
+
+  // Step 1: Exchange credentials for access token (form-urlencoded, not JSON)
+  const tokenRes = await fetch(`https://${domain}/admin/oauth/access_token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+    body: new URLSearchParams({ client_id: clientId, client_secret: clientSecret, grant_type: 'client_credentials' })
+  });
+  if (!tokenRes.ok) {
+    const txt = await tokenRes.text();
+    throw new Error(`Shopify token exchange ${tokenRes.status}: ${txt.slice(0, 200)}`);
+  }
+  const token = (await tokenRes.json()).access_token;
+  if (!token) throw new Error('No access_token returned from Shopify token exchange');
+
+  // Step 2: Query orders with the token
 
   const sinceDate = since || new Date(Date.now() - 7 * 86400000).toISOString();
   const query = `{
