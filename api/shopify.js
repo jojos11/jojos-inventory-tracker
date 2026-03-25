@@ -44,6 +44,8 @@ const BOX_PRODUCTS = {
   'st. paddy box': 6,
   'one dozen ($48)': 12,
   'half dozen ($34)': 6,
+  '4 pack ($27)': 4,
+  '4 pack': 4,
 };
 
 async function fetchShopifyOrders(since) {
@@ -126,6 +128,7 @@ function determineLocation(order) {
 
 function parseOrders(data) {
   const sales = [];
+  const allTitles = []; // debug
   const orders = data?.data?.orders?.edges || [];
   
   for (const { node: order } of orders) {
@@ -135,6 +138,8 @@ function parseOrders(data) {
     
     for (const { node: item } of lineItems) {
       const title = (item.title || '').toLowerCase().trim();
+      allTitles.push(item.title); // debug
+      
       
       // Skip non-cookie items
       if (SKIP_ITEMS.some(skip => title.includes(skip))) continue;
@@ -179,7 +184,7 @@ function parseOrders(data) {
       }
     }
   }
-  return sales;
+  return { sales, allTitles };
 }
 
 module.exports = async (req, res) => {
@@ -201,7 +206,7 @@ module.exports = async (req, res) => {
     for (const f of flavors) flavorMap[f.name] = f.id;
 
     const shopifyData = await fetchShopifyOrders(sinceDate);
-    const sales = parseOrders(shopifyData);
+    const { sales, allTitles } = parseOrders(shopifyData);
     
     const results = { 
       total: sales.length, 
@@ -260,6 +265,10 @@ module.exports = async (req, res) => {
       }
     }
 
+    // Include unique titles for debugging
+    const uniqueTitles = [...new Set(allTitles)].sort();
+    results.debug_titles = uniqueTitles;
+    results.debug_order_count = shopifyData?.data?.orders?.edges?.length || 0;
     res.json({ success: true, results });
   } catch (err) {
     console.error('Shopify sync error:', err.message);
