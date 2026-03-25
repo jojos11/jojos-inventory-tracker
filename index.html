@@ -385,7 +385,7 @@ function PrepListTab({dashData}) {
             {b.ingredients.map((ing,j) => (
               <div key={j} className="prep-item">
                 <span>{ing.name}</span>
-                <span style={{color:'var(--blue)',fontWeight:600}}>{ing.total_oz > 32 ? `${(ing.total_oz/16).toFixed(1)} lbs` : `${ing.total_oz} oz`} <span style={{color:'var(--gray)',fontWeight:400}}>({Math.round(ing.total_grams)}g)</span></span>
+                <span style={{color:'var(--blue)',fontWeight:600}}>{ing.total_grams.toLocaleString()}g</span>
               </div>
             ))}
           </div>
@@ -401,13 +401,12 @@ function PrepListTab({dashData}) {
               <h4>
                 <Tag color={typeColors[sr.subRecipe.type]||'var(--gray)'}>{sr.subRecipe.type.toUpperCase()}</Tag>
                 {sr.subRecipe.name}
-                {sr.totalOzNeeded && <span style={{color:'var(--blue)',fontSize:13}}>({sr.totalOzNeeded > 128 ? `${(sr.totalOzNeeded/128).toFixed(1)} gal` : sr.totalOzNeeded > 32 ? `${(sr.totalOzNeeded/16).toFixed(1)} lbs` : `${sr.totalOzNeeded} oz`} total)</span>}
                 <span style={{fontSize:11,color:'var(--gray)',fontWeight:400}}>for {sr.flavors.map(f=>f.name).join(', ')} ({sr.totalCookies} cookies)</span>
               </h4>
               {sr.ingredients.map((ing,j) => (
                 <div key={j} className="prep-item">
                   <span>{ing.name}</span>
-                  <span style={{color:'var(--orange)',fontWeight:600}}>{ing.total_oz > 32 ? `${(ing.total_oz/16).toFixed(1)} lbs` : `${ing.total_oz} oz`}</span>
+                  <span style={{color:'var(--orange)',fontWeight:600}}>{ing.total_grams.toLocaleString()}g</span>
                 </div>
               ))}
             </div>
@@ -424,7 +423,7 @@ function PrepListTab({dashData}) {
             <tbody>{prepData.addOns.map((ao,i) => (
               <tr key={i}>
                 <td style={{fontWeight:500}}>{ao.name}</td>
-                <td className="c" style={{fontWeight:600,color:'var(--green)'}}>{ao.total_lbs > 2 ? `${ao.total_lbs} lbs` : `${ao.total_oz} oz`}</td>
+                <td className="c" style={{fontWeight:600,color:'var(--green)'}}>{ao.total_grams.toLocaleString()}g</td>
                 <td style={{fontSize:12,color:'var(--gray)'}}>{ao.flavors.map(f=>f.name).join(', ')}</td>
               </tr>
             ))}</tbody>
