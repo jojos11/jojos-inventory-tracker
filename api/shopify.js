@@ -83,6 +83,7 @@ async function fetchShopifyOrders(since) {
                 title
                 quantity
                 variant { title }
+                customAttributes { key value }
               }
             }
           }
@@ -129,6 +130,8 @@ function determineLocation(order) {
 function parseOrders(data) {
   const sales = [];
   const allTitles = []; // debug
+  const allVariants = []; // debug
+  const allItemAttrs = []; // debug
   const orders = data?.data?.orders?.edges || [];
   
   for (const { node: order } of orders) {
@@ -139,28 +142,71 @@ function parseOrders(data) {
     for (const { node: item } of lineItems) {
       const title = (item.title || '').toLowerCase().trim();
       allTitles.push(item.title); // debug
+      if (item.variant?.title && item.variant.title !== 'Default Title') allVariants.push(item.variant.title); // debug
+      if (item.customAttributes?.length) allItemAttrs.push(...item.customAttributes.map(a => `${a.key}=${a.value}`)); // debug
       
       
       // Skip non-cookie items
       if (SKIP_ITEMS.some(skip => title.includes(skip))) continue;
       
-      // Check if it's a box product
+      // Check if it's a box/bundle product — parse individual cookies from customAttributes
       const boxCount = Object.entries(BOX_PRODUCTS).find(([key]) => title.includes(key));
       if (boxCount) {
-        // Box products — we know the cookie count but not individual flavors
-        // Record as generic "box" sale for total cookie counting
-        sales.push({
-          flavor_name: '__box__',
-          date,
-          quantity: boxCount[1] * (item.quantity || 1),
-          location,
-          order_id: order.name,
-          original_title: item.title
-        });
+        // Look for bundle details in customAttributes (format: "1 x Chocolate Chip, 2 x Famous Sugar")
+        const attrs = item.customAttributes || [];
+        let foundBundleItems = false;
+        
+        for (const attr of attrs) {
+          const val = attr.value || '';
+          if (val.includes(' x ')) {
+            foundBundleItems = true;
+            const parts = val.split(',').map(s => s.trim()).filter(Boolean);
+            for (const part of parts) {
+              const match = part.match(/(\d+)\s*x\s*(.+)/i);
+              if (match) {
+                const qty = parseInt(match[1]) * (item.quantity || 1);
+                const cookieName = match[2].trim();
+                const mappedName = COOKIE_NAME_MAP[cookieName.toLowerCase()];
+                if (mappedName) {
+                  sales.push({
+                    flavor_name: mappedName,
+                    date,
+                    quantity: qty,
+                    location,
+                    order_id: order.name,
+                    original_title: `${cookieName} (from ${item.title})`
+                  });
+                } else {
+                  // Unknown cookie in bundle
+                  sales.push({
+                    flavor_name: null,
+                    date,
+                    quantity: qty,
+                    location,
+                    order_id: order.name,
+                    original_title: `${cookieName} (from bundle, unmapped)`
+                  });
+                }
+              }
+            }
+          }
+        }
+        
+        if (!foundBundleItems) {
+          // No bundle details found — record as generic box
+          sales.push({
+            flavor_name: '__box__',
+            date,
+            quantity: boxCount[1] * (item.quantity || 1),
+            location,
+            order_id: order.name,
+            original_title: item.title
+          });
+        }
         continue;
       }
       
-      // Match to known cookie name
+      // Individual cookie line item — match to known cookie name
       const mappedName = COOKIE_NAME_MAP[title];
       if (mappedName) {
         sales.push({
@@ -184,7 +230,7 @@ function parseOrders(data) {
       }
     }
   }
-  return { sales, allTitles };
+  return { sales, allTitles, allVariants, allItemAttrs };
 }
 
 module.exports = async (req, res) => {
@@ -206,7 +252,7 @@ module.exports = async (req, res) => {
     for (const f of flavors) flavorMap[f.name] = f.id;
 
     const shopifyData = await fetchShopifyOrders(sinceDate);
-    const { sales, allTitles } = parseOrders(shopifyData);
+    const { sales, allTitles, allVariants, allItemAttrs } = parseOrders(shopifyData);
     
     const results = { 
       total: sales.length, 
@@ -265,9 +311,12 @@ module.exports = async (req, res) => {
       }
     }
 
-    // Include unique titles for debugging
     const uniqueTitles = [...new Set(allTitles)].sort();
+    const uniqueVariants = [...new Set(allVariants)].sort();
+    const uniqueAttrs = [...new Set(allItemAttrs)].sort();
     results.debug_titles = uniqueTitles;
+    results.debug_variants = uniqueVariants;
+    results.debug_item_attrs = uniqueAttrs.slice(0, 50); // limit
     results.debug_order_count = shopifyData?.data?.orders?.edges?.length || 0;
     res.json({ success: true, results });
   } catch (err) {
