@@ -1,24 +1,59 @@
 const { getSupabase, cors, checkAuth } = require('./lib/supabase');
 
-async function getShopifyToken() {
-  const resp = await fetch(`https://${process.env.SHOPIFY_STORE_DOMAIN}/admin/oauth/access_token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      client_id: process.env.SHOPIFY_CLIENT_ID,
-      client_secret: process.env.SHOPIFY_CLIENT_SECRET,
-      grant_type: 'client_credentials'
-    })
-  });
-  if (!resp.ok) throw new Error(`Shopify auth ${resp.status}`);
-  const data = await resp.json();
-  return data.access_token;
-}
+// Cookie name mapping: Shopify product titles → DB flavor names
+const COOKIE_NAME_MAP = {
+  'chocolate chip': 'Chocolate Chip',
+  'famous sugar': 'Famous Sugar',
+  'fudge chocolate': 'Fudge Chocolate',
+  'kitchen sink': 'Kitchen Sink',
+  'cake batter': 'Cake Batter',
+  'lemon': 'Lemon',
+  'snickerdoodle': 'Snickerdoodle',
+  'triple chip': 'Triple Chip',
+  'peanut butter': 'Peanut Butter',
+  'oatmeal raisin': 'Oatmeal Raisin',
+  'thick mint': 'Thick Mint',
+  'lucky charm': 'Lucky Charm',
+  'salted caramel chocolate chip': 'Salted Caramel',
+  'salted caramel': 'Salted Caramel',
+  'dubai chocolate': 'Dubai Chocolate',
+  'oatmeal cream': 'Oatmeal Cream',
+  'carrot cake': 'Carrot Cake',
+  'm&m brownie': 'M&M Brownie',
+  // Shopify display names that differ from DB
+  "not your mama's peanut butter": 'Peanut Butter',
+  "not your mama\u2019s peanut butter": 'Peanut Butter',
+  'lemon-glazed molasses': 'Molasses',
+  'gluten-friendly chocolate chip': 'GF Chocolate Chip',
+  'vegan-friendly chocolate chip': 'Vegan Chocolate Chip',
+  'monster': 'Monster',
+};
 
-async function fetchShopifyOrders(token, since) {
-  const sinceDate = since || new Date(Date.now() - 86400000).toISOString();
+// Items to skip (not actual cookies)
+const SKIP_ITEMS = [
+  'specialty cookie upcharge', 'premium cookie upcharge',
+  'gift card', 'shipping', 'merch', 'shirt', 'hat', 'hoodie',
+];
+
+// Box products (contain assorted cookies — count as generic cookies sold)
+const BOX_PRODUCTS = {
+  'easter box (half dozen $32)': 6,
+  'easter box (one dozen $44)': 12,
+  'st. paddy box ($32-$44) (half dozen)': 6,
+  'st. paddy box ($32-$44) (dozen)': 12,
+  'st. paddy box': 6,
+  'one dozen ($48)': 12,
+  'half dozen ($34)': 6,
+};
+
+async function fetchShopifyOrders(since) {
+  const token = process.env.SHOPIFY_ACCESS_TOKEN || process.env.SHOPIFY_CLIENT_SECRET;
+  const domain = process.env.SHOPIFY_STORE_DOMAIN;
+  if (!token || !domain) throw new Error('Missing SHOPIFY_ACCESS_TOKEN (or SHOPIFY_CLIENT_SECRET) and SHOPIFY_STORE_DOMAIN env vars');
+
+  const sinceDate = since || new Date(Date.now() - 7 * 86400000).toISOString();
   const query = `{
-    orders(first: 100, query: "created_at:>'${sinceDate}' AND NOT status:cancelled") {
+    orders(first: 250, query: "created_at:>'${sinceDate}' AND NOT status:cancelled") {
       edges {
         node {
           id
@@ -33,42 +68,99 @@ async function fetchShopifyOrders(token, since) {
               }
             }
           }
+          shippingAddress { provinceCode city }
+          note
+          tags
+          customAttributes { key value }
         }
       }
     }
   }`;
 
-  const resp = await fetch(`https://${process.env.SHOPIFY_STORE_DOMAIN}/admin/api/2024-01/graphql.json`, {
+  const resp = await fetch(`https://${domain}/admin/api/2024-01/graphql.json`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
     body: JSON.stringify({ query })
   });
-  if (!resp.ok) throw new Error(`Shopify API ${resp.status}`);
+  if (!resp.ok) {
+    const txt = await resp.text();
+    throw new Error(`Shopify API ${resp.status}: ${txt.slice(0, 200)}`);
+  }
   return resp.json();
 }
 
-function parseShopifyOrders(data) {
+function determineLocation(order) {
+  const note = (order.note || '').toLowerCase();
+  const tags = (order.tags || []).map(t => t.toLowerCase());
+  
+  // Check delivery address for store pickup
+  const attrs = order.customAttributes || [];
+  for (const attr of attrs) {
+    const val = (attr.value || '').toLowerCase();
+    if (val.includes('petoskey') || val.includes('charlevoix')) return { id: 1, name: 'Petoskey' };
+    if (val.includes('traverse') || val.includes('park street')) return { id: 2, name: 'Traverse City' };
+  }
+  
+  if (note.includes('petoskey') || note.includes('charlevoix')) return { id: 1, name: 'Petoskey' };
+  if (note.includes('traverse') || note.includes('park street')) return { id: 2, name: 'Traverse City' };
+  
+  // Shipping orders - count as Petoskey production
+  return { id: 1, name: 'Shipping' };
+}
+
+function parseOrders(data) {
   const sales = [];
   const orders = data?.data?.orders?.edges || [];
+  
   for (const { node: order } of orders) {
     const date = order.createdAt.split('T')[0];
+    const location = determineLocation(order);
     const lineItems = order.lineItems?.edges || [];
+    
     for (const { node: item } of lineItems) {
-      const title = (item.title || '').toLowerCase();
-      const variant = (item.variant?.title || '').toLowerCase();
-      if (title.includes('merch') || title.includes('shirt') || title.includes('hat')) continue;
-      let cookieCount = 1;
-      if (title.includes('dozen') || title.includes('12') || variant.includes('dozen')) cookieCount = 12;
-      else if (title.includes('half dozen') || title.includes('6') || variant.includes('half')) cookieCount = 6;
-      else if (title.includes('4 pack') || title.includes('4-pack') || variant.includes('4')) cookieCount = 4;
-      else if (title.includes('cookie cake large')) cookieCount = 12;
-      else if (title.includes('cookie cake small')) cookieCount = 6;
-      sales.push({
-        flavor_name: item.title, date,
-        quantity_sold: cookieCount * (item.quantity || 1),
-        pack_size: cookieCount === 12 ? '12-pack' : cookieCount === 6 ? '6-pack' : cookieCount === 4 ? '4-pack' : 'single',
-        order_id: order.name
-      });
+      const title = (item.title || '').toLowerCase().trim();
+      
+      // Skip non-cookie items
+      if (SKIP_ITEMS.some(skip => title.includes(skip))) continue;
+      
+      // Check if it's a box product
+      const boxCount = Object.entries(BOX_PRODUCTS).find(([key]) => title.includes(key));
+      if (boxCount) {
+        // Box products — we know the cookie count but not individual flavors
+        // Record as generic "box" sale for total cookie counting
+        sales.push({
+          flavor_name: '__box__',
+          date,
+          quantity: boxCount[1] * (item.quantity || 1),
+          location,
+          order_id: order.name,
+          original_title: item.title
+        });
+        continue;
+      }
+      
+      // Match to known cookie name
+      const mappedName = COOKIE_NAME_MAP[title];
+      if (mappedName) {
+        sales.push({
+          flavor_name: mappedName,
+          date,
+          quantity: item.quantity || 1,
+          location,
+          order_id: order.name,
+          original_title: item.title
+        });
+      } else {
+        // Unknown item
+        sales.push({
+          flavor_name: null,
+          date,
+          quantity: item.quantity || 1,
+          location,
+          order_id: order.name,
+          original_title: item.title
+        });
+      }
     }
   }
   return sales;
@@ -80,35 +172,76 @@ module.exports = async (req, res) => {
   if (!checkAuth(req)) return res.status(401).json({ error: 'Unauthorized' });
 
   const supabase = getSupabase();
-  const since = req.body?.since || new Date(Date.now() - 86400000).toISOString();
+  // Default to 7 days back for initial sync, or use provided 'since'
+  const since = req.body?.since || new Date(Date.now() - 7 * 86400000).toISOString();
+  const daysBack = req.body?.days || null;
+  const sinceDate = daysBack 
+    ? new Date(Date.now() - daysBack * 86400000).toISOString()
+    : since;
 
   try {
-    const token = await getShopifyToken();
     const { data: flavors } = await supabase.from('flavors').select('id, name').eq('active', true);
     const flavorMap = {};
-    for (const f of flavors) {
-      flavorMap[f.name.toLowerCase()] = f.id;
-      const n = f.name.toLowerCase();
-      if (n.includes('chocolate chip') && !n.includes('vegan') && !n.includes('gf')) flavorMap['choc chip'] = f.id;
-      if (n === 'peanut butter') flavorMap['pb'] = f.id;
-      if (n === 'famous sugar') flavorMap['sugar'] = f.id;
-      if (n === 'fudge chocolate') flavorMap['fudge'] = f.id;
-    }
+    for (const f of flavors) flavorMap[f.name] = f.id;
 
-    const shopifyData = await fetchShopifyOrders(token, since);
-    const sales = parseShopifyOrders(shopifyData);
-    const results = { total: sales.length, matched: 0, unmatched: [] };
+    const shopifyData = await fetchShopifyOrders(sinceDate);
+    const sales = parseOrders(shopifyData);
+    
+    const results = { 
+      total: sales.length, 
+      matched: 0, 
+      unmatched: [], 
+      boxes: 0,
+      inserted: 0,
+      skipped_duplicates: 0
+    };
 
     for (const sale of sales) {
-      const fId = flavorMap[sale.flavor_name.toLowerCase()];
-      if (fId) {
-        await supabase.from('sales').insert({
-          flavor_id: fId, location_id: 1, source: 'shopify',
-          date: sale.date, quantity_sold: sale.quantity_sold,
-          pack_size: sale.pack_size, order_id: sale.order_id
-        });
+      if (sale.flavor_name === '__box__') {
+        results.boxes += sale.quantity;
+        continue;
+      }
+      
+      if (!sale.flavor_name) {
+        results.unmatched.push(sale.original_title);
+        continue;
+      }
+
+      const flavorId = flavorMap[sale.flavor_name];
+      if (!flavorId) {
+        results.unmatched.push(`${sale.original_title} (mapped to "${sale.flavor_name}" but not in DB)`);
+        continue;
+      }
+
+      // Check for duplicate (same order_id + flavor + date)
+      const { data: existing } = await supabase.from('sales')
+        .select('id')
+        .eq('order_id', sale.order_id)
+        .eq('flavor_id', flavorId)
+        .eq('date', sale.date)
+        .limit(1);
+      
+      if (existing && existing.length > 0) {
+        results.skipped_duplicates++;
+        continue;
+      }
+
+      const { error } = await supabase.from('sales').insert({
+        flavor_id: flavorId,
+        location_id: sale.location.id,
+        source: 'shopify',
+        date: sale.date,
+        quantity_sold: sale.quantity,
+        pack_size: 'individual',
+        order_id: sale.order_id
+      });
+      
+      if (!error) {
         results.matched++;
-      } else results.unmatched.push(sale.flavor_name);
+        results.inserted++;
+      } else {
+        results.unmatched.push(`DB error for ${sale.flavor_name}: ${error.message}`);
+      }
     }
 
     res.json({ success: true, results });
@@ -117,20 +250,3 @@ module.exports = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-```
-
-Commit that — **all files are done!** Your repo should now have:
-```
-├── README.md
-├── index.html
-├── package.json
-├── vercel.json
-└── api/
-    ├── clover.js
-    ├── config.js
-    ├── dashboard.js
-    ├── db.js
-    ├── orders.js
-    ├── shopify.js
-    └── lib/
-        └── supabase.js
