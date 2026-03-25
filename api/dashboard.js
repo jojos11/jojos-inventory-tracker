@@ -75,8 +75,8 @@ module.exports = async (req, res) => {
         if (tin) for (const t of tin) tcBins += Number(t.bins);
       }
 
-      petBins = Math.max(0, Math.round(petBins * 4) / 4);
-      tcBins = Math.max(0, Math.round(tcBins * 4) / 4);
+      petBins = Math.max(0, petBins);
+      tcBins = Math.max(0, tcBins);
       inventory[f.id] = { flavor: f, petoskey: petBins, tc: tcBins, total: petBins + tcBins };
     }
 
