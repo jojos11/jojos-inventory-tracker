@@ -13,6 +13,12 @@ module.exports = async (req, res) => {
       return res.json({ inventory: [], productionPlan: [], velocity: {}, alerts: [], manualOrders: [], summary: { totalFlavors: 0 } });
     }
 
+    // Calculate days until next Monday (production day)
+    const now = new Date();
+    const dayOfWeek = now.getDay(); // 0=Sun, 1=Mon...
+    const daysUntilMonday = dayOfWeek === 0 ? 1 : dayOfWeek === 1 ? 7 : (8 - dayOfWeek);
+    const projectionDays = daysUntilMonday;
+
     const inventory = {};
 
     for (const f of flavors) {
@@ -74,6 +80,7 @@ module.exports = async (req, res) => {
       inventory[f.id] = { flavor: f, petoskey: petBins, tc: tcBins, total: petBins + tcBins };
     }
 
+    // Velocity: 4-week average weekly usage in bins
     const fourWeeksAgo = new Date(Date.now() - 28 * 86400000).toISOString().split('T')[0];
     const velocity = {};
     for (const f of flavors) {
@@ -84,47 +91,57 @@ module.exports = async (req, res) => {
 
     const { data: manualOrders } = await supabase.from('manual_orders').select('*, manual_order_items(*)').in('status', ['pending', 'confirmed']).order('fulfillment_date');
 
+    // Production plan: project forward to next Monday
     const productionPlan = [];
     for (const f of flavors) {
       const inv = inventory[f.id];
       const weeklyUse = velocity[f.id] || 0;
-      const endOfWeek = Math.round((inv.total - weeklyUse) * 4) / 4;
+      // Project usage forward based on days until next Monday
+      const projectedUse = Math.round(weeklyUse * (projectionDays / 7) * 4) / 4;
+      const projectedEnd = Math.round((inv.total - projectedUse) * 4) / 4;
+
       const trigger = Number(f.restock_trigger_bins) || 3;
+
+      // Add upcoming manual order demand
       const upcomingDemand = (manualOrders || []).reduce((sum, o) => {
         const items = (o.manual_order_items || []).filter(i => i.flavor_id === f.id);
         return sum + items.reduce((s, i) => s + (Number(i.quantity) / f.bin_capacity_cookies), 0);
       }, 0);
-      const projectedEnd = endOfWeek - upcomingDemand;
-      const needsProduction = projectedEnd <= trigger;
-      const binsNeeded = needsProduction ? Math.max(0, Number(f.par_level_bins) - projectedEnd) : 0;
+
+      const projectedWithOrders = Math.round((projectedEnd - upcomingDemand) * 4) / 4;
+      const needsProduction = projectedWithOrders <= trigger;
+      const binsNeeded = needsProduction ? Math.max(0, Number(f.par_level_bins) - projectedWithOrders) : 0;
       const binsPerBatch = f.batch_size_cookies / f.bin_capacity_cookies;
       const batches = binsNeeded > 0 ? Math.ceil(binsNeeded / binsPerBatch) : 0;
       const tcNeedsTransfer = inv.tc <= 1 && inv.petoskey > trigger;
 
       productionPlan.push({
         flavor: f, current: inv.total, petoskey: inv.petoskey, tc: inv.tc,
-        weeklyUse, endOfWeek: projectedEnd, needsProduction,
+        weeklyUse, projectedUse, projectedEnd: projectedWithOrders,
+        needsProduction,
         binsNeeded: Math.round(binsNeeded * 4) / 4, batches, tcNeedsTransfer,
-        upcomingDemand: Math.round(upcomingDemand * 4) / 4
+        upcomingDemand: Math.round(upcomingDemand * 4) / 4,
+        daysProjected: projectionDays
       });
     }
 
     productionPlan.sort((a, b) => {
       if (a.needsProduction && !b.needsProduction) return -1;
       if (!a.needsProduction && b.needsProduction) return 1;
-      return a.endOfWeek - b.endOfWeek;
+      return a.projectedEnd - b.projectedEnd;
     });
 
     const alerts = [];
     for (const p of productionPlan) {
-      if (p.endOfWeek < 0) alerts.push({ type: 'critical', message: p.flavor.name + ' will run out this week!', flavor: p.flavor.name });
-      else if (p.needsProduction) alerts.push({ type: 'warning', message: p.flavor.name + ' below restock trigger (' + p.current + ' bins)', flavor: p.flavor.name });
+      if (p.projectedEnd < 0) alerts.push({ type: 'critical', message: p.flavor.name + ' will run out before next Monday!', flavor: p.flavor.name });
+      else if (p.needsProduction) alerts.push({ type: 'warning', message: p.flavor.name + ' below restock trigger (' + p.current + ' bins, projected ' + p.projectedEnd + ' by Monday)', flavor: p.flavor.name });
       if (p.tcNeedsTransfer) alerts.push({ type: 'transfer', message: p.flavor.name + ' — TC needs transfer from Petoskey', flavor: p.flavor.name });
     }
 
     res.json({
       inventory: Object.values(inventory), productionPlan, velocity, alerts,
       manualOrders: manualOrders || [],
+      projectionDays,
       summary: {
         totalFlavors: flavors.length,
         needsProduction: productionPlan.filter(p => p.needsProduction).length,
