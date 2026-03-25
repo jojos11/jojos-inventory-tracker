@@ -9,10 +9,13 @@ module.exports = async (req, res) => {
 
   try {
     const { batches } = req.body || {};
+
+    // Only get active ingredients
     const { data: ingredients } = await supabase.from('ingredients').select('*').eq('active', true).order('supplier_id').order('name');
     const { data: pantry } = await supabase.from('pantry').select('*');
     const pantryMap = {};
     for (const p of pantry || []) pantryMap[p.ingredient_id] = p;
+
     const { data: baseIngredients } = await supabase.from('base_dough_ingredients').select('*');
     const { data: flavorIngredients } = await supabase.from('flavor_ingredients').select('*');
     const { data: flavors } = await supabase.from('flavors').select('*').eq('active', true);
@@ -24,6 +27,13 @@ module.exports = async (req, res) => {
     const subRecipeMap = {};
     for (const sr of subRecipes || []) subRecipeMap[sr.id] = sr;
 
+    // Build set of ingredients actually used in recipes
+    const usedIngredientIds = new Set();
+    for (const bi of baseIngredients || []) usedIngredientIds.add(bi.ingredient_id);
+    for (const fi of flavorIngredients || []) usedIngredientIds.add(fi.ingredient_id);
+    for (const si of subRecipeIngredients || []) usedIngredientIds.add(si.ingredient_id);
+
+    // Calculate ingredient usage from production plan
     const ingredientUsage = {};
 
     if (batches && Array.isArray(batches)) {
@@ -48,9 +58,20 @@ module.exports = async (req, res) => {
           const sr = subRecipeMap[link.sub_recipe_id];
           if (!sr) continue;
           const srIngs = subRecipeIngredients?.filter(si => si.sub_recipe_id === link.sub_recipe_id) || [];
-          if (sr.grams_per_cookie) {
+          if (sr.oz_per_cookie) {
+            // Frostings/centers: scale by oz_per_cookie, convert to grams for usage tracking
             const cookiesProduced = flavor.batch_size_cookies * batch_count;
-            const scaleFactor = sr.grams_per_cookie * cookiesProduced;
+            const totalOzNeeded = parseFloat(sr.oz_per_cookie) * cookiesProduced;
+            const totalSubOz = srIngs.reduce((s, i) => s + parseFloat(i.grams) / 28.3495, 0);
+            if (totalSubOz > 0) {
+              for (const si of srIngs) {
+                const ratio = (parseFloat(si.grams) / 28.3495) / totalSubOz;
+                ingredientUsage[si.ingredient_id] = (ingredientUsage[si.ingredient_id] || 0) + (totalOzNeeded * ratio * 28.3495);
+              }
+            }
+          } else if (sr.grams_per_cookie) {
+            const cookiesProduced = flavor.batch_size_cookies * batch_count;
+            const scaleFactor = parseFloat(sr.grams_per_cookie) * cookiesProduced;
             const totalSubGrams = srIngs.reduce((s, i) => s + parseFloat(i.grams), 0);
             if (totalSubGrams > 0) {
               for (const si of srIngs) {
@@ -67,23 +88,31 @@ module.exports = async (req, res) => {
       }
     }
 
+    // Build supplier order lists - only include ingredients used in recipes
     const suppliers = {};
     for (const ing of ingredients) {
+      // Skip ingredients not used in any recipe
+      if (!usedIngredientIds.has(ing.id)) continue;
+
       const supId = ing.supplier_id;
       if (!suppliers[supId]) suppliers[supId] = { items: [] };
       const pantryItem = pantryMap[ing.id];
       const onHand = pantryItem ? parseFloat(pantryItem.quantity_on_hand || 0) : 0;
       const parLevel = pantryItem ? parseFloat(pantryItem.par_level || 0) : 0;
       const usageGrams = ingredientUsage[ing.id] || 0;
-      const needToOrder = Math.max(0, parLevel - onHand);
+      const needToOrder = parLevel > 0 ? Math.max(0, parLevel - onHand) : 0;
+
+      // Calculate level percentage safely (avoid NaN)
+      const levelPct = parLevel > 0 ? Math.round(onHand / parLevel * 100) : 0;
 
       suppliers[supId].items.push({
         ingredient: ing, on_hand: onHand, par_level: parLevel,
         usage_grams: Math.round(usageGrams),
         usage_oz: Math.round(usageGrams / 28.3495 * 10) / 10,
         need_to_order: needToOrder,
-        unit: pantryItem?.unit || ing.unit_size,
-        status: onHand >= parLevel * 0.7 ? 'good' : onHand >= parLevel * 0.4 ? 'low' : 'order'
+        unit: pantryItem?.unit || ing.unit_size || 'unit',
+        level_pct: levelPct,
+        status: parLevel === 0 ? 'no-par' : onHand >= parLevel * 0.7 ? 'good' : onHand >= parLevel * 0.4 ? 'low' : 'order'
       });
     }
 
