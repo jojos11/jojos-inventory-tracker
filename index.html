@@ -633,18 +633,46 @@ function TransfersTab({flavors}) {
 function SyncTab() {
   const [syncing, setSyncing] = useState(null);
   const [results, setResults] = useState({});
+  const [shopifyDays, setShopifyDays] = useState(7);
   const syncClover = async () => { setSyncing('clover'); try { const r = await api('clover',{since:new Date(Date.now()-86400000).toISOString()}); setResults(p=>({...p,clover:r.results})); } catch(e) { setResults(p=>({...p,clover:{errors:[e.message]}})); } setSyncing(null); };
-  const syncShopify = async () => { setSyncing('shopify'); try { const r = await api('shopify',{since:new Date(Date.now()-86400000).toISOString()}); setResults(p=>({...p,shopify:r.results})); } catch(e) { setResults(p=>({...p,shopify:{errors:[e.message]}})); } setSyncing(null); };
+  const syncShopify = async (days) => { 
+    setSyncing('shopify'); 
+    try { 
+      const r = await api('shopify', { days: days || shopifyDays }); 
+      setResults(p=>({...p,shopify:r.results, shopifyError:null})); 
+    } catch(e) { 
+      setResults(p=>({...p,shopify:null, shopifyError:e.message})); 
+    } 
+    setSyncing(null); 
+  };
   return (
     <div>
-      <div className="card"><h3>Sync Sales Data</h3><p className="sub">Pull latest sales from Clover and Shopify to update inventory.</p>
-        <div style={{display:'flex',gap:12,marginTop:16}}>
-          <button className="btn btn-green" onClick={syncClover} disabled={syncing} style={{flex:1,padding:12}}>{syncing==='clover'?'Syncing...':'Sync Clover (In-Store)'}</button>
-          <button className="btn btn-blue" onClick={syncShopify} disabled={syncing} style={{flex:1,padding:12}}>{syncing==='shopify'?'Syncing...':'Sync Shopify (Online)'}</button>
+      <div className="card"><h3>Sync Sales Data</h3><p className="sub">Pull sales from Clover and Shopify to feed the production plan and velocity calculations.</p>
+        <div style={{display:'flex',gap:12,marginTop:16,flexWrap:'wrap'}}>
+          <button className="btn btn-green" onClick={syncClover} disabled={syncing} style={{flex:1,padding:12,minWidth:200}}>{syncing==='clover'?'Syncing...':'Sync Clover (In-Store)'}</button>
+          <div style={{flex:2,display:'flex',gap:8,alignItems:'center',minWidth:300}}>
+            <select className="select" style={{width:120}} value={shopifyDays} onChange={e=>setShopifyDays(parseInt(e.target.value))}>
+              <option value={1}>Last 24hr</option>
+              <option value={7}>Last 7 days</option>
+              <option value={14}>Last 14 days</option>
+              <option value={30}>Last 30 days</option>
+            </select>
+            <button className="btn btn-blue" onClick={()=>syncShopify()} disabled={syncing} style={{flex:1,padding:12}}>{syncing==='shopify'?'Syncing Shopify...':'Sync Shopify (Online)'}</button>
+          </div>
         </div>
       </div>
+      {results.shopifyError && <div className="card" style={{borderLeft:'3px solid var(--red)'}}><h3 style={{color:'var(--red)'}}>Shopify Error</h3><p style={{fontSize:13,marginTop:8,color:'var(--red)'}}>{results.shopifyError}</p><p style={{fontSize:12,color:'var(--gray)',marginTop:4}}>Check that SHOPIFY_ACCESS_TOKEN and SHOPIFY_STORE_DOMAIN env vars are set in Vercel.</p></div>}
+      {results.shopify && <div className="card" style={{borderLeft:'3px solid var(--blue)'}}>
+        <h3>Shopify Sync Results</h3>
+        <div style={{display:'flex',gap:16,marginTop:12,flexWrap:'wrap'}}>
+          <div style={{textAlign:'center'}}><div className="serif" style={{fontSize:24,color:'var(--blue)'}}>{results.shopify.inserted||0}</div><div style={{fontSize:11,color:'var(--gray)'}}>New sales added</div></div>
+          <div style={{textAlign:'center'}}><div className="serif" style={{fontSize:24,color:'var(--green)'}}>{results.shopify.matched||0}</div><div style={{fontSize:11,color:'var(--gray)'}}>Cookies matched</div></div>
+          <div style={{textAlign:'center'}}><div className="serif" style={{fontSize:24,color:'var(--orange)'}}>{results.shopify.boxes||0}</div><div style={{fontSize:11,color:'var(--gray)'}}>Box cookies</div></div>
+          <div style={{textAlign:'center'}}><div className="serif" style={{fontSize:24,color:'var(--gray)'}}>{results.shopify.skipped_duplicates||0}</div><div style={{fontSize:11,color:'var(--gray)'}}>Already synced</div></div>
+        </div>
+        {results.shopify.unmatched?.length>0&&<div style={{marginTop:12}}><p style={{color:'var(--yellow)',fontSize:12}}>Unmatched items: {[...new Set(results.shopify.unmatched)].join(', ')}</p></div>}
+      </div>}
       {results.clover && <div className="card"><h3>Clover Results</h3><p style={{fontSize:13,marginTop:8}}>Petoskey: {results.clover.petoskey||0} | TC: {results.clover.tc||0} | Matched: {results.clover.matched||0}</p>{results.clover.unmatched?.length>0&&<p style={{color:'var(--yellow)',fontSize:12,marginTop:4}}>Unmatched: {[...new Set(results.clover.unmatched)].join(', ')}</p>}{results.clover.errors?.length>0&&<p style={{color:'var(--red)',fontSize:12,marginTop:4}}>Errors: {results.clover.errors.join(', ')}</p>}</div>}
-      {results.shopify && <div className="card"><h3>Shopify Results</h3><p style={{fontSize:13,marginTop:8}}>Total: {results.shopify.total||0} | Matched: {results.shopify.matched||0}</p>{results.shopify.unmatched?.length>0&&<p style={{color:'var(--yellow)',fontSize:12,marginTop:4}}>Unmatched: {[...new Set(results.shopify.unmatched)].join(', ')}</p>}</div>}
     </div>
   );
 }
