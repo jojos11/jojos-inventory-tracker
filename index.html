@@ -671,6 +671,7 @@ function SyncTab() {
           <div style={{textAlign:'center'}}><div className="serif" style={{fontSize:24,color:'var(--gray)'}}>{results.shopify.skipped_duplicates||0}</div><div style={{fontSize:11,color:'var(--gray)'}}>Already synced</div></div>
         </div>
         {results.shopify.unmatched?.length>0&&<div style={{marginTop:12}}><p style={{color:'var(--yellow)',fontSize:12}}>Unmatched items: {[...new Set(results.shopify.unmatched)].join(', ')}</p></div>}
+        {results.shopify.debug_titles&&<div style={{marginTop:12,borderTop:'1px solid var(--border)',paddingTop:8}}><p style={{fontSize:11,color:'var(--gray)'}}>Debug — {results.shopify.debug_order_count} orders, {results.shopify.debug_titles.length} unique line items:</p><p style={{fontSize:11,color:'var(--gray2)',marginTop:4,wordBreak:'break-all'}}>{results.shopify.debug_titles.join(' | ')}</p></div>}
       </div>}
       {results.clover && <div className="card"><h3>Clover Results</h3><p style={{fontSize:13,marginTop:8}}>Petoskey: {results.clover.petoskey||0} | TC: {results.clover.tc||0} | Matched: {results.clover.matched||0}</p>{results.clover.unmatched?.length>0&&<p style={{color:'var(--yellow)',fontSize:12,marginTop:4}}>Unmatched: {[...new Set(results.clover.unmatched)].join(', ')}</p>}{results.clover.errors?.length>0&&<p style={{color:'var(--red)',fontSize:12,marginTop:4}}>Errors: {results.clover.errors.join(', ')}</p>}</div>}
     </div>
