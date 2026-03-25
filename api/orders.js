@@ -58,18 +58,7 @@ module.exports = async (req, res) => {
           const sr = subRecipeMap[link.sub_recipe_id];
           if (!sr) continue;
           const srIngs = subRecipeIngredients?.filter(si => si.sub_recipe_id === link.sub_recipe_id) || [];
-          if (sr.oz_per_cookie) {
-            // Frostings/centers: scale by oz_per_cookie, convert to grams for usage tracking
-            const cookiesProduced = flavor.batch_size_cookies * batch_count;
-            const totalOzNeeded = parseFloat(sr.oz_per_cookie) * cookiesProduced;
-            const totalSubOz = srIngs.reduce((s, i) => s + parseFloat(i.grams) / 28.3495, 0);
-            if (totalSubOz > 0) {
-              for (const si of srIngs) {
-                const ratio = (parseFloat(si.grams) / 28.3495) / totalSubOz;
-                ingredientUsage[si.ingredient_id] = (ingredientUsage[si.ingredient_id] || 0) + (totalOzNeeded * ratio * 28.3495);
-              }
-            }
-          } else if (sr.grams_per_cookie) {
+          if (sr.grams_per_cookie) {
             const cookiesProduced = flavor.batch_size_cookies * batch_count;
             const scaleFactor = parseFloat(sr.grams_per_cookie) * cookiesProduced;
             const totalSubGrams = srIngs.reduce((s, i) => s + parseFloat(i.grams), 0);
