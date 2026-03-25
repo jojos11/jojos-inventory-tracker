@@ -300,7 +300,8 @@ module.exports = async (req, res) => {
         date: sale.date,
         quantity_sold: sale.quantity,
         pack_size: 'individual',
-        order_id: sale.order_id
+        order_id: sale.order_id,
+        synced_at: new Date().toISOString()
       });
       
       if (!error) {
