@@ -114,49 +114,29 @@ module.exports = async (req, res) => {
       const totalSubGrams = srIngs.reduce((s, i) => s + parseFloat(i.grams), 0);
 
       let ingredients;
-      let usesOz = false;
 
-      if (sr.oz_per_cookie) {
-        // Frostings/centers measured in oz — scale by oz_per_cookie * total cookies
-        usesOz = true;
-        const totalOzNeeded = parseFloat(sr.oz_per_cookie) * sn.totalCookies;
-        const totalSubOz = totalSubGrams / 28.3495;
-        ingredients = srIngs.map(si => {
-          const ratio = totalSubOz > 0 ? (parseFloat(si.grams) / 28.3495) / totalSubOz : 0;
-          const ingOz = totalOzNeeded * ratio;
-          return {
-            name: si.ingredients?.nickname || si.ingredients?.name || 'Unknown',
-            total_oz: Math.round(ingOz * 10) / 10,
-            total_lbs: Math.round(ingOz / 16 * 10) / 10,
-            total_grams: Math.round(ingOz * 28.3495)
-          };
-        });
-      } else if (sr.grams_per_cookie) {
-        // Scale by grams_per_cookie * total cookies
+      if (sr.grams_per_cookie) {
+        // Frostings: scale by grams_per_cookie * total cookies
         const totalGrams = parseFloat(sr.grams_per_cookie) * sn.totalCookies;
         ingredients = srIngs.map(si => {
           const ratio = totalSubGrams > 0 ? parseFloat(si.grams) / totalSubGrams : 0;
           const total = totalGrams * ratio;
           return {
             name: si.ingredients?.nickname || si.ingredients?.name || 'Unknown',
-            total_grams: Math.round(total),
-            total_oz: Math.round(total / 28.3495 * 10) / 10,
-            total_lbs: Math.round(total / 453.592 * 10) / 10
+            grams_per_batch: parseFloat(si.grams),
+            total_grams: Math.round(total)
           };
         });
       } else {
-        // Scale by batches (glazes, etc.)
+        // Glazes and others: scale by batches
         ingredients = srIngs.map(si => ({
           name: si.ingredients?.nickname || si.ingredients?.name || 'Unknown',
-          total_grams: Math.round(parseFloat(si.grams) * sn.totalBatches),
-          total_oz: Math.round(parseFloat(si.grams) * sn.totalBatches / 28.3495 * 10) / 10,
-          total_lbs: Math.round(parseFloat(si.grams) * sn.totalBatches / 453.592 * 10) / 10
+          grams_per_batch: parseFloat(si.grams),
+          total_grams: Math.round(parseFloat(si.grams) * sn.totalBatches)
         }));
       }
 
-      const totalOzNeeded = sr.oz_per_cookie ? Math.round(parseFloat(sr.oz_per_cookie) * sn.totalCookies * 10) / 10 : null;
-
-      return { ...sn, ingredients, usesOz, totalOzNeeded };
+      return { ...sn, ingredients };
     });
 
     // 3. Calculate add-on ingredient needs (flavor-specific mix-ins)
