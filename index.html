@@ -1298,9 +1298,20 @@ function SettingsTab({flavors, onRefresh}) {
   const savePantryEdits = async () => {
     setSavingPantry(true);
     for (const [ingId, vals] of Object.entries(pantryEdits)) {
-      const existing = pantryItems.find(p => p.ingredient_id === parseInt(ingId));
+      const ingIdNum = parseInt(ingId);
+      const existing = pantryItems.find(p => p.ingredient_id === ingIdNum);
+      const ing = ingredients.find(i => i.id === ingIdNum);
+      const data = {
+        quantity_on_hand: parseFloat(vals.on_hand || 0),
+        par_level: parseFloat(vals.par || 0),
+        unit: ing?.order_unit || 'unit',
+        updated_by: 'manager'
+      };
       if (existing) {
-        await db('pantry','update',{id:existing.id,data:{quantity_on_hand:parseFloat(vals.on_hand||0),par_level:parseFloat(vals.par||0),updated_by:'manager'}});
+        await db('pantry','update',{id:existing.id, data});
+      } else {
+        // Create new pantry row if it doesn't exist yet
+        await db('pantry','insert',{data: {ingredient_id: ingIdNum, ...data}});
       }
     }
     setPantryEdits({});
@@ -1569,39 +1580,133 @@ function SettingsTab({flavors, onRefresh}) {
         </div>
       )}
 
-      {settingsTab === 'pantry' && (
-        <div className="card">
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
-            <div><h3>Pantry Inventory & Par Levels</h3><p className="sub">Set on-hand quantities and reorder par levels for each ingredient.</p></div>
+      {settingsTab === 'pantry' && (() => {
+        // Build a description string showing how big 1 order_unit is
+        const packDescription = (ing) => {
+          if (!ing.order_unit) return '—';
+          const unit = ing.order_unit;
+          const units = ing.units_per_order_unit;
+          const grams = ing.grams_per_order_unit;
+          // Convert grams back to lbs/oz for display (if ingredient)
+          let sizeText = '';
+          if (ing.category === 'ingredient' && grams) {
+            const lbs = grams / 453.592;
+            if (lbs >= 1) sizeText = ` = ${lbs.toFixed(1)} lbs`;
+            else sizeText = ` = ${(grams / 28.3495).toFixed(1)} oz`;
+          } else if (units) {
+            sizeText = ` (${units} units)`;
+          }
+          return `1 ${unit}${sizeText}`;
+        };
+
+        // Supplier name lookup
+        const supplierColors = {1:'var(--green)', 2:'#42A5F5', 3:'#FF7043'};
+
+        const renderCategorySection = (categoryKey, label, description) => {
+          const filtered = ingredients.filter(i => (i.category || 'ingredient') === categoryKey);
+          if (filtered.length === 0) return null;
+
+          // Group by supplier
+          const bySupplier = {};
+          for (const ing of filtered) {
+            const sid = ing.supplier_id || 0;
+            if (!bySupplier[sid]) bySupplier[sid] = [];
+            bySupplier[sid].push(ing);
+          }
+
+          return (
+            <div key={categoryKey} style={{marginBottom:28}}>
+              <div style={{borderLeft:'3px solid var(--blue)',paddingLeft:12,marginBottom:10}}>
+                <h3 style={{margin:0}}>{label}</h3>
+                <p className="sub" style={{marginBottom:0,fontSize:12}}>{description}</p>
+              </div>
+              {Object.entries(bySupplier).map(([sid,ings]) => (
+                <div key={sid} style={{marginBottom:18}}>
+                  <div className="section-label" style={{color:supplierColors[sid]||'var(--gray)',fontSize:11}}>{supplierNames[sid]||'Other'} ({ings.length})</div>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th style={{minWidth:160}}>Ingredient</th>
+                        <th style={{fontSize:11,color:'var(--gray)'}}>Pack Size</th>
+                        <th className="c" style={{width:100}}>On Hand</th>
+                        <th className="c" style={{width:100}}>Par (min)</th>
+                        <th style={{width:60,fontSize:11,color:'var(--gray)'}}>Unit</th>
+                      </tr>
+                    </thead>
+                    <tbody>{ings.map(ing => (
+                      <tr key={ing.id}>
+                        <td style={{fontWeight:500}}>{ing.nickname || ing.name}</td>
+                        <td style={{color:'var(--gray)',fontSize:12}}>{packDescription(ing)}</td>
+                        <td className="c">
+                          <input
+                            className="input"
+                            type="number"
+                            step="0.25"
+                            min="0"
+                            placeholder="0"
+                            value={getPantryVal(ing.id,'on_hand')}
+                            onChange={e=>setPantryField(ing.id,'on_hand',e.target.value)}
+                          />
+                        </td>
+                        <td className="c">
+                          <input
+                            className="input"
+                            type="number"
+                            step="0.25"
+                            min="0"
+                            placeholder="0"
+                            value={getPantryVal(ing.id,'par')}
+                            onChange={e=>setPantryField(ing.id,'par',e.target.value)}
+                          />
+                        </td>
+                        <td style={{color:'var(--gray)',fontSize:12,whiteSpace:'nowrap'}}>{ing.order_unit ? ing.order_unit + (getPantryVal(ing.id,'on_hand') == 1 ? '' : 's') : 'unit'}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              ))}
+            </div>
+          );
+        };
+
+        return (
+          <div>
+            {/* Walk-through instructions card */}
+            <div className="card" style={{borderLeft:'3px solid var(--blue)',marginBottom:14}}>
+              <h3 style={{marginBottom:6}}>Pantry Walk-Through</h3>
+              <p className="sub" style={{marginBottom:10}}>
+                For every item you use, enter the amount you have on hand <strong>in that item's order unit</strong> (cases, bags, pails, etc).
+                Partial cases are OK — use decimals like <code>2.5</code> for 2½ cases.
+              </p>
+              <div style={{background:'var(--bg)',padding:10,borderRadius:6,fontSize:13,marginBottom:10}}>
+                <strong>Example:</strong> Milk Chocolate Chips ship as 25 lb cases. If you have 3 full cases, enter <strong>3</strong>. If you have 2 cases plus a half-used case, enter <strong>2.5</strong>. The "Pack Size" column reminds you how big each case/bag is.
+              </div>
+              <div style={{background:'var(--bg)',padding:10,borderRadius:6,fontSize:13}}>
+                <strong>Par (minimum)</strong> = the lowest you'll ever let the pantry drop before reordering.
+                For LOL butter (3-4 week lead time), set this higher (maybe 3-4 cases).
+                For fast-moving items like flour or chips, 1-2 cases is usually fine.
+              </div>
+            </div>
+
+            {/* Save/cancel header when edits pending */}
             {Object.keys(pantryEdits).length > 0 && (
-              <div style={{display:'flex',gap:8}}>
-                <button className="btn btn-outline" onClick={()=>setPantryEdits({})}>Cancel</button>
-                <button className="btn btn-green" onClick={savePantryEdits} disabled={savingPantry}>{savingPantry?'Saving...':'Save Changes'}</button>
+              <div style={{position:'sticky',top:0,zIndex:10,background:'var(--bg-card)',padding:12,borderRadius:8,marginBottom:14,display:'flex',justifyContent:'space-between',alignItems:'center',boxShadow:'0 2px 8px rgba(0,0,0,.3)'}}>
+                <div style={{fontSize:13}}>
+                  <strong>{Object.keys(pantryEdits).length}</strong> pending change{Object.keys(pantryEdits).length !== 1 ? 's' : ''}
+                </div>
+                <div style={{display:'flex',gap:8}}>
+                  <button className="btn btn-outline" onClick={()=>setPantryEdits({})}>Cancel</button>
+                  <button className="btn btn-green" onClick={savePantryEdits} disabled={savingPantry}>{savingPantry?'Saving...':'Save Changes'}</button>
+                </div>
               </div>
             )}
+
+            {renderCategorySection('ingredient', 'Ingredients', 'Things that go into recipes — flour, butter, chips, extracts')}
+            {renderCategorySection('packaging', 'Packaging', 'Boxes, bags, parchment — what cookies go into')}
+            {renderCategorySection('supply', 'Supplies', 'Gloves and other non-food usables')}
           </div>
-          {[1,2,3].map(supId => {
-            const supIngs = ingredients.filter(i=>i.supplier_id===supId);
-            if (supIngs.length===0) return null;
-            return (
-              <div key={supId}>
-                <div className="section-label" style={{color:supId===1?'var(--green)':supId===2?'#42A5F5':'#FF7043'}}>{supplierNames[supId]||'Other'}</div>
-                <table>
-                  <thead><tr><th>Ingredient</th><th className="c">On Hand</th><th className="c">Par Level</th><th>Unit</th></tr></thead>
-                  <tbody>{supIngs.map(ing => (
-                    <tr key={ing.id}>
-                      <td style={{fontWeight:500}}>{ing.nickname||ing.name}</td>
-                      <td className="c"><input className="input" type="number" step="1" value={getPantryVal(ing.id,'on_hand')} onChange={e=>setPantryField(ing.id,'on_hand',e.target.value)}/></td>
-                      <td className="c"><input className="input" type="number" step="1" value={getPantryVal(ing.id,'par')} onChange={e=>setPantryField(ing.id,'par',e.target.value)}/></td>
-                      <td style={{color:'var(--gray)',fontSize:12}}>{ing.unit_size||'unit'}</td>
-                    </tr>
-                  ))}</tbody>
-                </table>
-              </div>
-            );
-          })}
-        </div>
-      )}
+        );
+      })()}
 
       {settingsTab === 'employees' && (
         <div className="card">
