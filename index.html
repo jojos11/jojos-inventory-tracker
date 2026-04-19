@@ -1582,21 +1582,52 @@ function SettingsTab({flavors, onRefresh}) {
 
       {settingsTab === 'pantry' && (() => {
         // Build a description string showing how big 1 order_unit is
+        // For multi-unit cases: "1 case = 6 × 5 lbs (30 lbs)"
+        // For single-unit cases: "1 bag = 50 lbs"
         const packDescription = (ing) => {
           if (!ing.order_unit) return '—';
           const unit = ing.order_unit;
           const units = ing.units_per_order_unit;
           const grams = ing.grams_per_order_unit;
-          // Convert grams back to lbs/oz for display (if ingredient)
-          let sizeText = '';
+
+          // Parse the unit_size field (e.g. "5.0 LB", "45.0 OZ", "2.0 LB")
+          // to get the per-unit size for display
+          let perUnitText = '';
+          if (ing.unit_size) {
+            // Clean up unit_size: "5.0 LB" -> "5 lbs"
+            perUnitText = ing.unit_size
+              .replace(/\.0\s/g, ' ')
+              .replace(/\bLB\b/g, 'lbs')
+              .replace(/\bOZ\b/g, 'oz')
+              .replace(/\bFOZ\b/g, 'fl oz')
+              .replace(/\bCT\b/g, 'ct')
+              .replace(/\bGAL\b/g, 'gal')
+              .replace(/\bQT\b/g, 'qt')
+              .trim();
+          }
+
+          // Total grams display
+          let totalText = '';
           if (ing.category === 'ingredient' && grams) {
             const lbs = grams / 453.592;
-            if (lbs >= 1) sizeText = ` = ${lbs.toFixed(1)} lbs`;
-            else sizeText = ` = ${(grams / 28.3495).toFixed(1)} oz`;
-          } else if (units) {
-            sizeText = ` (${units} units)`;
+            if (lbs >= 1) totalText = `${lbs.toFixed(1)} lbs`;
+            else totalText = `${(grams / 28.3495).toFixed(1)} oz`;
           }
-          return `1 ${unit}${sizeText}`;
+
+          // Assemble the description
+          if (units && units > 1 && perUnitText) {
+            // Multi-unit case: "1 case = 6 × 5 lbs (30 lbs total)"
+            if (totalText) {
+              return `1 ${unit} = ${units} × ${perUnitText} (${totalText} total)`;
+            }
+            return `1 ${unit} = ${units} × ${perUnitText}`;
+          } else if (totalText) {
+            // Single-unit case: "1 bag = 50 lbs"
+            return `1 ${unit} = ${totalText}`;
+          } else if (units) {
+            return `1 ${unit} = ${units} units`;
+          }
+          return `1 ${unit}`;
         };
 
         // Supplier name lookup
@@ -1676,10 +1707,17 @@ function SettingsTab({flavors, onRefresh}) {
               <h3 style={{marginBottom:6}}>Pantry Walk-Through</h3>
               <p className="sub" style={{marginBottom:10}}>
                 For every item you use, enter the amount you have on hand <strong>in that item's order unit</strong> (cases, bags, pails, etc).
-                Partial cases are OK — use decimals like <code>2.5</code> for 2½ cases.
+                Partial cases = decimals. Check the "Pack Size" column to see what's in each unit.
               </p>
               <div style={{background:'var(--bg)',padding:10,borderRadius:6,fontSize:13,marginBottom:10}}>
-                <strong>Example:</strong> Milk Chocolate Chips ship as 25 lb cases. If you have 3 full cases, enter <strong>3</strong>. If you have 2 cases plus a half-used case, enter <strong>2.5</strong>. The "Pack Size" column reminds you how big each case/bag is.
+                <strong>Quick conversions:</strong> divide (what you have) by (what's in a full case)
+                <div style={{marginTop:6,lineHeight:1.7}}>
+                  <div>• 3 tubs of baking powder (6 per case) → <strong>0.5</strong></div>
+                  <div>• 3 boxes brownie mix (6 per case) → <strong>0.5</strong></div>
+                  <div>• 2 full cases + half case butter → <strong>2.5</strong></div>
+                  <div>• 12 lbs loose chocolate chips (25 lb case) → <strong>0.5</strong></div>
+                  <div>• Nothing left → <strong>0</strong></div>
+                </div>
               </div>
               <div style={{background:'var(--bg)',padding:10,borderRadius:6,fontSize:13}}>
                 <strong>Par (minimum)</strong> = the lowest you'll ever let the pantry drop before reordering.
