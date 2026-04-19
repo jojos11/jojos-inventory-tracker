@@ -71,16 +71,70 @@ td.c{text-align:center}
 .tab-pills{display:flex;gap:4px;margin-bottom:12px}
 .tab-pills button{padding:6px 14px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--gray);font-size:12px;font-weight:600;cursor:pointer}
 .tab-pills button.active{background:var(--blue);color:#000;border-color:var(--blue)}
+
+/* ─── Nightly Count Screen ─── */
+.count-row{display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid rgba(51,51,51,.25);flex-wrap:wrap}
+.count-row:hover{background:rgba(162,204,235,.03)}
+.count-row .flav-name{flex:1;min-width:140px;font-weight:500;font-size:14px}
+.count-row .prev-count{font-size:11px;color:var(--gray);font-weight:400;margin-left:6px}
+.count-row .variance-warn{font-size:10px;color:var(--yellow);margin-left:6px;font-weight:600}
+.quick-btns{display:flex;gap:3px;flex-wrap:wrap}
+.quick-btn{min-width:34px;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:#ccc;font-size:12px;font-weight:600;cursor:pointer;transition:all .12s;font-family:inherit}
+.quick-btn:hover{border-color:var(--gray)}
+.quick-btn.active{background:var(--blue);color:#000;border-color:var(--blue)}
+.quick-btn.custom{background:var(--card);color:var(--blue);font-style:italic}
+.quick-btn.not-stocked{background:transparent;color:var(--gray2);font-size:10px;padding:6px 10px}
+.quick-btn.not-stocked.active{background:var(--gray2);color:#fff;border-color:var(--gray2)}
+.custom-input{width:56px;background:var(--bg);border:1px solid var(--blue);border-radius:6px;padding:6px 8px;color:#fff;font-size:13px;text-align:center;font-family:inherit}
+.count-row.counted{background:rgba(76,175,80,.04)}
+.count-row.not-stocked{opacity:.6}
+
+/* Count status banner */
+.count-status{display:flex;gap:12px;margin-bottom:14px;flex-wrap:wrap}
+.count-chip{flex:1;min-width:180px;padding:10px 14px;background:var(--card);border:1px solid var(--border);border-radius:10px;display:flex;align-items:center;gap:10px}
+.count-chip .icon{font-size:16px}
+.count-chip.ok{border-left:3px solid var(--green)}
+.count-chip.stale{border-left:3px solid var(--yellow)}
+.count-chip.missing{border-left:3px solid var(--red)}
+.count-chip .label{font-size:11px;color:var(--gray);text-transform:uppercase;letter-spacing:.8px}
+.count-chip .value{font-size:13px;font-weight:600;margin-top:1px}
+.count-chip .who{font-size:11px;color:var(--gray);margin-top:1px}
+
+/* Production plan */
+.plan-section{background:var(--bg);border-radius:8px;padding:12px;margin-bottom:10px}
+.plan-section h4{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px}
+.plan-row{display:grid;grid-template-columns:minmax(140px,2fr) 1fr 1fr 1fr 1fr auto;gap:10px;align-items:center;padding:8px 4px;border-bottom:1px solid rgba(51,51,51,.15);font-size:13px}
+.plan-row:last-child{border-bottom:none}
+.plan-row .flav{font-weight:500}
+.plan-row .num{text-align:center;font-weight:600}
+.plan-row .small{font-size:11px;color:var(--gray)}
+.plan-row .batches{background:var(--blue);color:#000;padding:4px 10px;border-radius:6px;font-weight:700;text-align:center;min-width:60px}
+.plan-row.critical .flav{color:var(--red)}
+.stocked-chips{display:flex;flex-wrap:wrap;gap:6px}
+.stocked-chip{padding:4px 10px;border-radius:6px;background:rgba(76,175,80,.08);color:var(--green);font-size:12px}
+.summary-box{background:var(--bg);border:1px solid var(--blue);border-radius:10px;padding:14px;margin-top:12px}
+.summary-box h4{font-family:'Playfair Display',serif;font-size:14px;font-weight:700;margin-bottom:8px}
+.summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-top:8px}
+.summary-item{text-align:center}
+.summary-item .val{font-family:'Playfair Display',serif;font-size:22px;font-weight:700;color:var(--blue)}
+.summary-item .lbl{font-size:10px;color:var(--gray);text-transform:uppercase;letter-spacing:.8px;margin-top:2px}
+
+/* Variance confirm modal */
+.confirm-modal{background:var(--card);border:2px solid var(--yellow);border-radius:12px;padding:20px;max-width:420px}
 @media(max-width:900px){
   header{flex-direction:column;gap:8px;padding:10px 14px}
   .nav{flex-wrap:wrap;justify-content:center}
   .header-logo{height:28px}
+  .plan-row{grid-template-columns:1fr 1fr;font-size:12px}
+  .plan-row .small{display:none}
 }
 @media(max-width:600px){
   .stats{flex-direction:column}
   .stat{min-width:auto}
   main{padding:12px}
   .nav button{font-size:10px;padding:6px 8px}
+  .count-row .flav-name{min-width:100%}
+  .quick-btn{min-width:30px;padding:5px 6px;font-size:11px}
 }
 </style>
 </head>
@@ -157,156 +211,389 @@ function LoginScreen({onLogin}) {
 }
 
 // ─── INITIAL SETUP ──────────────────
-function InitialSetup({flavors, onComplete}) {
-  const [counts, setCounts] = useState({});
+// ─── NIGHTLY COUNT TAB (replaces old DoughTab + InitialSetup) ───────────────
+function DoughTab({loc, flavors, dashData, onSaved}) {
+  const locId = loc === 'petoskey' ? 1 : 2;
+  const locName = loc === 'petoskey' ? 'Petoskey' : 'Traverse City';
+  const storageKey = `jojo_count_draft_${locId}`;
+
+  const [employees, setEmployees] = useState([]);
+  const [countedBy, setCountedBy] = useState('');
+  const [counts, setCounts] = useState({});       // {flavorId: '0.5' or number}
+  const [notStocked, setNotStocked] = useState({}); // {flavorId: true}
+  const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
-  const save = async () => {
+  const [confirmFlavor, setConfirmFlavor] = useState(null); // variance confirm
+  const [saveMsg, setSaveMsg] = useState('');
+
+  // Previous counts (for reference + variance detection)
+  const [prevCounts, setPrevCounts] = useState({}); // {flavorId: number}
+
+  // Load employees + previous night's counts + any local draft on mount / loc change
+  useEffect(() => {
+    (async () => {
+      const {data: emps} = await db('employees','select',{filters:{active:true},orderBy:'name'});
+      setEmployees(emps || []);
+
+      // Get previous (most recent) count per flavor at this location
+      const prev = {};
+      for (const f of flavors) {
+        const {data} = await db('inventory_snapshots','select',{
+          filters:{flavor_id:f.id,location_id:locId},
+          orderBy:'created_at:desc',
+          limit:1
+        });
+        if (data && data.length > 0 && data[0].actual_bins !== null) {
+          prev[f.id] = Number(data[0].actual_bins);
+        }
+      }
+      setPrevCounts(prev);
+
+      // Restore local draft if present (survives refresh/sleep)
+      try {
+        const raw = localStorage.getItem(storageKey);
+        if (raw) {
+          const draft = JSON.parse(raw);
+          const ageMs = Date.now() - (draft.savedAt || 0);
+          // Only restore drafts younger than 18 hours
+          if (ageMs < 18 * 3600000) {
+            if (draft.counts) setCounts(draft.counts);
+            if (draft.notStocked) setNotStocked(draft.notStocked);
+            if (draft.countedBy) setCountedBy(draft.countedBy);
+            if (draft.notes) setNotes(draft.notes);
+          } else {
+            localStorage.removeItem(storageKey);
+          }
+        }
+      } catch(e) { /* ignore parse errors */ }
+    })();
+  }, [locId, flavors]);
+
+  // Persist draft whenever it changes
+  useEffect(() => {
+    if (Object.keys(counts).length === 0 && Object.keys(notStocked).length === 0 && !countedBy && !notes) return;
+    try {
+      localStorage.setItem(storageKey, JSON.stringify({
+        counts, notStocked, countedBy, notes, savedAt: Date.now()
+      }));
+    } catch(e) { /* quota or disabled */ }
+  }, [counts, notStocked, countedBy, notes, storageKey]);
+
+  const setCount = (fId, val) => {
+    setCounts(c => ({...c, [fId]: val}));
+    setNotStocked(ns => {
+      if (ns[fId]) { const next = {...ns}; delete next[fId]; return next; }
+      return ns;
+    });
+  };
+
+  const toggleNotStocked = (fId) => {
+    setNotStocked(ns => {
+      const next = {...ns};
+      if (next[fId]) delete next[fId];
+      else next[fId] = true;
+      return next;
+    });
+    setCounts(c => { const n = {...c}; delete n[fId]; return n; });
+  };
+
+  // Variance check for one flavor: flag if >2x or <0.5x previous, and value is nonzero
+  const hasVariance = (fId, val) => {
+    const prev = prevCounts[fId];
+    if (prev === undefined || prev === null) return false;
+    const num = parseFloat(val);
+    if (isNaN(num)) return false;
+    if (prev === 0 && num > 3) return true; // big jump from zero
+    if (prev > 0) {
+      if (num > prev * 2.5) return true;
+      if (num < prev * 0.3 && prev > 1) return true;
+    }
+    return false;
+  };
+
+  // Completion status for save button
+  const totalFlavors = flavors.length;
+  const completedFlavors = flavors.filter(f =>
+    notStocked[f.id] || (counts[f.id] !== undefined && counts[f.id] !== '')
+  ).length;
+  const ready = countedBy && completedFlavors === totalFlavors;
+
+  const doSave = async () => {
     setSaving(true);
+    setSaveMsg('');
     const today = new Date().toISOString().split('T')[0];
-    for (const f of flavors) {
-      const petBins = parseFloat(counts[`${f.id}_pet`] || 0);
-      const tcBins = parseFloat(counts[`${f.id}_tc`] || 0);
-      if (petBins > 0) await db('inventory_snapshots','insert',{data:{flavor_id:f.id,location_id:1,date:today,actual_bins:petBins,calculated_bins:petBins,counted_by:'initial'}});
-      if (tcBins > 0) await db('inventory_snapshots','insert',{data:{flavor_id:f.id,location_id:2,date:today,actual_bins:tcBins,calculated_bins:tcBins,counted_by:'initial'}});
+
+    try {
+      for (const f of flavors) {
+        const isNotStocked = !!notStocked[f.id];
+        const raw = counts[f.id];
+        const val = isNotStocked ? null : (raw === '' || raw === undefined ? null : parseFloat(raw));
+
+        // Upsert by flavor+loc+date — last save for the day wins
+        await db('inventory_snapshots','upsert',{data:{
+          flavor_id: f.id,
+          location_id: locId,
+          date: today,
+          actual_bins: val,
+          calculated_bins: val,
+          counted_by: countedBy,
+          notes: notes || null
+        }});
+      }
+
+      // Clear draft
+      localStorage.removeItem(storageKey);
+      setCounts({});
+      setNotStocked({});
+      setNotes('');
+      setSaveMsg(`✓ Count saved for ${locName}`);
+      setTimeout(()=>setSaveMsg(''), 3000);
+      if (onSaved) onSaved();
+    } catch(e) {
+      setSaveMsg('Error saving: ' + e.message);
     }
     setSaving(false);
-    onComplete();
   };
-  const renderGroup = (list, label, color) => (
-    <>
-      <tr><td colSpan={3} className="section-label" style={{color}}>{label}</td></tr>
-      {list.map(f => (
-        <tr key={f.id}>
-          <td style={{fontWeight:500}}>{f.name}</td>
-          <td className="c"><input className="input" type="number" step="0.25" value={counts[`${f.id}_pet`]||''} onChange={e=>setCounts({...counts,[`${f.id}_pet`]:e.target.value})} placeholder="0"/></td>
-          <td className="c"><input className="input" type="number" step="0.25" value={counts[`${f.id}_tc`]||''} onChange={e=>setCounts({...counts,[`${f.id}_tc`]:e.target.value})} placeholder="0"/></td>
-        </tr>
-      ))}
-    </>
-  );
-  return (
-    <div style={{maxWidth:600,margin:'30px auto',padding:20}}>
-      <div className="card">
-        <div style={{textAlign:'center',marginBottom:20}}>
-          <h2 className="serif">Initial Inventory Setup</h2>
-          <p className="sub">Enter how many dough bins you currently have at each location.</p>
+
+  const handleSaveClick = () => {
+    // Check for any unconfirmed variances
+    const variant = flavors.find(f => {
+      if (notStocked[f.id]) return false;
+      return hasVariance(f.id, counts[f.id]);
+    });
+    if (variant) {
+      setConfirmFlavor(variant);
+      return;
+    }
+    doSave();
+  };
+
+  const renderFlavorRow = (f) => {
+    const curVal = counts[f.id] !== undefined ? String(counts[f.id]) : '';
+    const isNS = !!notStocked[f.id];
+    const prev = prevCounts[f.id];
+    const presets = ['0','0.25','0.5','0.75','1','2','3','4','5'];
+    const showCustom = curVal !== '' && !presets.includes(curVal);
+    const counted = isNS || curVal !== '';
+    const variance = hasVariance(f.id, curVal);
+
+    return (
+      <div key={f.id} className={`count-row ${counted ? 'counted' : ''} ${isNS ? 'not-stocked' : ''}`}>
+        <div className="flav-name">
+          {f.name}
+          {prev !== undefined && <span className="prev-count">last: {prev}</span>}
+          {variance && <span className="variance-warn">⚠ variance</span>}
         </div>
-        <table>
-          <thead><tr><th>Flavor</th><th className="c">Petoskey</th><th className="c">TC</th></tr></thead>
-          <tbody>
-            {renderGroup(flavors.filter(f=>f.type==='classic'), 'Classics', 'var(--blue)')}
-            {flavors.filter(f=>f.type==='specialty').length>0 && renderGroup(flavors.filter(f=>f.type==='specialty'), 'Monthly Specialties', 'var(--orange)')}
-            {flavors.filter(f=>f.type==='extra').length>0 && renderGroup(flavors.filter(f=>f.type==='extra'), 'Extras', 'var(--green)')}
-          </tbody>
-        </table>
-        <div style={{textAlign:'center',marginTop:20}}>
-          <button className="btn btn-green" style={{padding:'12px 40px',fontSize:14}} onClick={save} disabled={saving}>
-            {saving ? 'Saving...' : 'Save & Start Tracking'}
+        <div className="quick-btns">
+          {presets.map(p => (
+            <button key={p}
+              className={`quick-btn ${curVal===p && !isNS ? 'active' : ''}`}
+              onClick={()=>setCount(f.id, p)}>
+              {p === '0.25' ? '¼' : p === '0.5' ? '½' : p === '0.75' ? '¾' : p === '5' ? '5' : p}
+            </button>
+          ))}
+          {showCustom ? (
+            <input
+              className="custom-input"
+              type="number" step="0.25" min="0"
+              value={curVal}
+              onChange={e=>setCount(f.id, e.target.value)}
+              onBlur={e=>{ if (e.target.value === '') setCounts(c=>{const n={...c};delete n[f.id];return n;}); }}
+            />
+          ) : (
+            <button className="quick-btn custom" onClick={()=>{
+              const v = prompt(`Enter count for ${f.name} (bins, supports decimals like 1.5):`, prev !== undefined ? String(prev) : '');
+              if (v !== null && v !== '') setCount(f.id, v);
+            }}>custom</button>
+          )}
+          <button
+            className={`quick-btn not-stocked ${isNS ? 'active' : ''}`}
+            onClick={()=>toggleNotStocked(f.id)}>
+            {isNS ? '✓ Not stocked' : 'Not stocked'}
           </button>
         </div>
       </div>
-    </div>
-  );
-}
-
-// ─── DOUGH BINS ─────────────────────
-function DoughTab({loc, flavors, dashData}) {
-  const [editing, setEditing] = useState(false);
-  const [counts, setCounts] = useState({});
-  const locId = loc === 'petoskey' ? 1 : 2;
-  const locName = loc === 'petoskey' ? 'Petoskey' : 'Traverse City';
-  const inv = dashData?.inventory || [];
-  const getInv = (fId) => { const item = inv.find(i => i.flavor.id === fId); return item ? (locId === 1 ? item.petoskey : item.tc) : 0; };
-
-  const saveCounts = async () => {
-    const today = new Date().toISOString().split('T')[0];
-    for (const [fId, bins] of Object.entries(counts)) {
-      if (bins !== '') await db('inventory_snapshots', 'upsert', { data: { flavor_id: parseInt(fId), location_id: locId, date: today, actual_bins: parseFloat(bins), counted_by: 'manager' }});
-    }
-    setEditing(false); setCounts({}); window.location.reload();
+    );
   };
 
-  const totalBins = flavors.reduce((s,f) => s + getInv(f.id), 0);
-  const belowTrigger = flavors.filter(f => (inv.find(i=>i.flavor.id===f.id)?.total||0) <= parseFloat(f.restock_trigger_bins||3)).length;
+  const classics = flavors.filter(f=>f.type==='classic');
+  const specialties = flavors.filter(f=>f.type==='specialty');
+  const extras = flavors.filter(f=>f.type==='extra');
 
-  const renderGroup = (list, label, labelColor, tagLabel) => (
-    <>
-      <tr><td colSpan={6} className="section-label" style={{color:labelColor}}>{label}</td></tr>
-      {list.map(f => {
-        const bins = editing && counts[f.id] !== undefined ? parseFloat(counts[f.id]) : getInv(f.id);
-        const par = parseFloat(f.par_level_bins||6);
-        const sc = sColor(bins, par);
-        return (
-          <tr key={f.id}>
-            <td><Dot color={sc}/><span style={{fontWeight:500}}>{f.name}</span>
-              {tagLabel && <Tag color={labelColor}>{tagLabel}</Tag>}
-              {f.is_stuffed && <Tag color="var(--orange)">STUFFED</Tag>}
-            </td>
-            <td className="c">{editing ? <input className="input" type="number" step="0.25" value={counts[f.id]!==undefined?counts[f.id]:bins} onChange={e=>setCounts({...counts,[f.id]:e.target.value})}/> : <span style={{fontWeight:600}}>{(Math.round(bins*4)/4) % 1 === 0 ? Math.round(bins*4)/4 : (Math.round(bins*4)/4).toFixed(2).replace(/0$/,'')}</span>}</td>
-            <td className="c" style={{color:'var(--gray)'}}>{par}</td>
-            <td className="c" style={{color:'var(--gray)'}}>{f.restock_trigger_bins||3}</td>
-            <td><Bar pct={bins/par*100} color={sc}/></td>
-            <td className="c" style={{fontSize:12,color:'var(--gray)'}}>{Math.round(bins*(f.bin_capacity_cookies||80))}</td>
-          </tr>
-        );
-      })}
-    </>
-  );
   return (
     <div>
-      <div className="stats">
-        <Stat value={totalBins.toFixed(1)} label={`Total Bins — ${locName}`}/>
-        <Stat value={flavors.length - belowTrigger} label="Above Trigger" color="var(--green)"/>
-        <Stat value={belowTrigger} label="Below Trigger" color="var(--red)"/>
-      </div>
       <div className="card">
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
-          <div><h3>Dough Bins — {locName}</h3><p className="sub">Calculated from snapshots + production - sales - transfers.</p></div>
-          <div style={{display:'flex',gap:8}}>
-            {editing ? <><button className="btn btn-outline" onClick={()=>{setEditing(false);setCounts({});}}>Cancel</button><button className="btn btn-green" onClick={saveCounts}>✓ Save</button></>
-            : <button className="btn btn-blue" onClick={()=>setEditing(true)}>Spot Check</button>}
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6,flexWrap:'wrap',gap:10}}>
+          <div>
+            <h3>Nightly Count — {locName}</h3>
+            <p className="sub">Count each flavor before close. Draft auto-saves. Tap Save when done.</p>
+          </div>
+          <div style={{fontSize:12,color:'var(--gray)'}}>
+            {completedFlavors} of {totalFlavors} counted
           </div>
         </div>
-        <table>
-          <thead><tr><th>Flavor</th><th className="c">Bins</th><th className="c">Par</th><th className="c">Trigger</th><th>Level</th><th className="c">~Cookies</th></tr></thead>
-          <tbody>
-            {renderGroup(flavors.filter(f=>f.type==='classic'), 'Classics', 'var(--blue)', null)}
-            {flavors.filter(f=>f.type==='specialty').length>0 && renderGroup(flavors.filter(f=>f.type==='specialty'), 'Monthly Specialties', 'var(--orange)', 'MONTHLY')}
-            {flavors.filter(f=>f.type==='extra').length>0 && renderGroup(flavors.filter(f=>f.type==='extra'), 'Extras', 'var(--green)', 'EXTRA')}
-          </tbody>
-        </table>
+
+        <div style={{display:'flex',gap:10,marginTop:10,marginBottom:4,flexWrap:'wrap'}}>
+          <select className="select" style={{flex:1,minWidth:200,maxWidth:300}}
+            value={countedBy} onChange={e=>setCountedBy(e.target.value)}>
+            <option value="">Counted by...</option>
+            {employees.map(e=><option key={e.id} value={e.name}>{e.name}</option>)}
+          </select>
+          {employees.length === 0 && (
+            <span style={{fontSize:11,color:'var(--yellow)',alignSelf:'center'}}>
+              Add employees in Settings first
+            </span>
+          )}
+        </div>
       </div>
+
+      {classics.length > 0 && <div className="card">
+        <h3 style={{color:'var(--blue)',marginBottom:4}}>Classics</h3>
+        <div>{classics.map(renderFlavorRow)}</div>
+      </div>}
+
+      {specialties.length > 0 && <div className="card">
+        <h3 style={{color:'var(--orange)',marginBottom:4}}>Monthly Specialties</h3>
+        <div>{specialties.map(renderFlavorRow)}</div>
+      </div>}
+
+      {extras.length > 0 && <div className="card">
+        <h3 style={{color:'var(--green)',marginBottom:4}}>Extras</h3>
+        <div>{extras.map(renderFlavorRow)}</div>
+      </div>}
+
+      <div className="card">
+        <input className="input-wide" placeholder="Notes (optional — spilled bin, found extras, etc.)"
+          value={notes} onChange={e=>setNotes(e.target.value)}/>
+        <div style={{display:'flex',gap:10,marginTop:12,alignItems:'center',flexWrap:'wrap'}}>
+          <button className="btn btn-outline"
+            onClick={()=>{
+              if (confirm('Clear all entries for this count?')) {
+                setCounts({}); setNotStocked({}); setNotes('');
+                localStorage.removeItem(storageKey);
+              }
+            }}>Clear</button>
+          <button className="btn btn-green"
+            onClick={handleSaveClick}
+            disabled={!ready || saving}
+            style={{padding:'10px 24px',fontSize:14,flex:1,maxWidth:300}}>
+            {saving ? 'Saving…' : ready ? `✓ Save Count for ${locName}` : countedBy ? `Count all flavors (${totalFlavors - completedFlavors} left)` : 'Select employee & count all flavors'}
+          </button>
+          {saveMsg && <span style={{color: saveMsg.startsWith('✓') ? 'var(--green)' : 'var(--red)',fontSize:13,fontWeight:600}}>{saveMsg}</span>}
+        </div>
+      </div>
+
+      {/* Variance confirm modal */}
+      {confirmFlavor && (
+        <div className="modal-overlay" onClick={()=>setConfirmFlavor(null)}>
+          <div className="confirm-modal" onClick={e=>e.stopPropagation()}>
+            <h3 style={{fontFamily:"'Playfair Display',serif",fontSize:16,color:'var(--yellow)',marginBottom:10}}>⚠ Double-check this count</h3>
+            <p style={{fontSize:13,lineHeight:1.5,marginBottom:14}}>
+              <strong>{confirmFlavor.name}</strong>: you entered <strong>{counts[confirmFlavor.id]}</strong> bins.<br/>
+              Last count was <strong>{prevCounts[confirmFlavor.id]}</strong> bins.<br/>
+              <span style={{color:'var(--gray)'}}>That's a big change. Make sure the number is right.</span>
+            </p>
+            <div style={{display:'flex',gap:10}}>
+              <button className="btn btn-outline" style={{flex:1}} onClick={()=>setConfirmFlavor(null)}>Go back & fix</button>
+              <button className="btn btn-blue" style={{flex:1}} onClick={()=>{setConfirmFlavor(null);doSave();}}>Yes, that's right</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-// ─── PRODUCTION PLAN ────────────────
+// ─── PRODUCTION PLAN ────────────────────────────────────────────────────────
 function ProductionTab({dashData}) {
   const plan = dashData?.productionPlan || [];
   const alerts = dashData?.alerts || [];
-  const projDays = dashData?.projectionDays || 7;
+  const projDays = dashData?.projectionDays || 14;
+  const countFreshness = dashData?.countFreshness || {};
+  const thisWeek = dashData?.thisWeek || {totalBatches:0,byBase:{},byFlavor:{}};
+  const batchesByBase = dashData?.summary?.batchesByBase || {};
+
   const needs = plan.filter(p=>p.needsProduction);
   const stocked = plan.filter(p=>!p.needsProduction);
   const totalBatches = needs.reduce((s,p)=>s+p.batches,0);
-  const baseSummary = {};
-  for (const p of needs) {
-    const base = p.flavor.base_dough_id ? `Base ${['','A','B','C','D','F'][p.flavor.base_dough_id]||'?'}` : 'Standalone';
-    baseSummary[base] = (baseSummary[base]||0) + p.batches;
-  }
+
+  const fmtHours = (h) => {
+    if (h === null || h === undefined) return 'never';
+    if (h < 1) return 'just now';
+    if (h < 24) return `${h}h ago`;
+    const d = Math.floor(h/24);
+    return `${d}d ${h%24}h ago`;
+  };
+
+  const renderCountChip = (locId, locName) => {
+    const cf = countFreshness[locId];
+    if (!cf || cf.missing) {
+      return (
+        <div className="count-chip missing">
+          <span className="icon">●</span>
+          <div><div className="label">{locName}</div><div className="value">No count yet</div></div>
+        </div>
+      );
+    }
+    const klass = cf.stale ? 'stale' : 'ok';
+    return (
+      <div className={`count-chip ${klass}`}>
+        <span className="icon">{cf.stale ? '⚠' : '✓'}</span>
+        <div>
+          <div className="label">{locName}</div>
+          <div className="value">Counted {fmtHours(cf.hoursAgo)}</div>
+          {cf.countedBy && <div className="who">by {cf.countedBy}</div>}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div>
+      {/* Count status */}
+      <div className="count-status">
+        {renderCountChip(1, 'Petoskey')}
+        {renderCountChip(2, 'Traverse City')}
+      </div>
+
       <div className="stats">
-        <Stat value={totalBatches} label="Batches to Make"/>
+        <Stat value={totalBatches} label="Batches Needed Next Week"/>
         <Stat value={needs.length} label="Flavors Need Dough" color="var(--orange)"/>
         <Stat value={stocked.length} label="Stocked" color="var(--green)"/>
-        <Stat value={`${projDays}d`} label="Projecting Forward"/>
+        <Stat value={`${projDays}d`} label="Projection Window"/>
       </div>
-      {alerts.length > 0 && <div className="card"><h3>⚠️ Alerts</h3><div style={{marginTop:10}}>{alerts.map((a,i) => <div key={i} className={`alert alert-${a.type}`}>{a.message}</div>)}</div></div>}
-      {Object.keys(baseSummary).length > 0 && (
+
+      {/* Alerts */}
+      {alerts.length > 0 && (
+        <div className="card">
+          <h3>⚠️ Alerts</h3>
+          <div style={{marginTop:10}}>
+            {alerts.map((a,i) => <div key={i} className={`alert alert-${a.type}`}>{a.message}</div>)}
+          </div>
+        </div>
+      )}
+
+      {/* This week's production so far */}
+      {thisWeek.totalBatches > 0 && (
         <div className="card" style={{padding:'14px 18px'}}>
-          <h3 style={{fontSize:13,marginBottom:10}}>Base Dough Summary</h3>
+          <h3 style={{fontSize:13,marginBottom:8}}>This Week's Production So Far</h3>
+          <div style={{display:'flex',gap:16,flexWrap:'wrap',alignItems:'center'}}>
+            <div><span className="serif" style={{fontSize:22,fontWeight:700,color:'var(--green)'}}>{thisWeek.totalBatches}</span> <span style={{fontSize:12,color:'var(--gray)'}}>batches logged</span></div>
+            {Object.entries(thisWeek.byBase).sort((a,b)=>b[1]-a[1]).map(([base,cnt]) => (
+              <div key={base} style={{fontSize:12,color:'var(--gray)'}}>
+                <span style={{color:'#fff',fontWeight:600}}>{cnt}</span> {cnt===1?'batch':'batches'} <span>{base}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Batch-to-base summary for upcoming production */}
+      {Object.keys(batchesByBase).length > 0 && (
+        <div className="card" style={{padding:'14px 18px'}}>
+          <h3 style={{fontSize:13,marginBottom:10}}>Next Production Cycle — Base Dough Summary</h3>
           <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-            {Object.entries(baseSummary).sort((a,b)=>b[1]-a[1]).map(([base,cnt]) => (
+            {Object.entries(batchesByBase).sort((a,b)=>b[1]-a[1]).map(([base,cnt]) => (
               <div key={base} style={{background:'var(--bg)',borderRadius:8,padding:'8px 14px',display:'flex',alignItems:'center',gap:8}}>
                 <span className="serif" style={{fontSize:20,fontWeight:700,color:'var(--blue)'}}>{cnt}</span>
                 <span style={{fontSize:12,color:'var(--gray)'}}>{cnt===1?'batch':'batches'} of <span style={{color:'#fff',fontWeight:600}}>{base}</span></span>
@@ -315,28 +602,58 @@ function ProductionTab({dashData}) {
           </div>
         </div>
       )}
+
+      {/* Production plan — flavors needing production */}
       <div className="card">
-        <h3>Production Plan <Tag>→ Next Monday ({projDays} days)</Tag></h3>
-        <p className="sub">Projected inventory by next Monday based on current stock and sales velocity.</p>
+        <h3>Production Plan <Tag>next {projDays} days</Tag></h3>
+        <p className="sub">Bins needed to keep both locations at par through the full production cycle (order Tue → truck Wed → prep Wed-Sun → dough Mon-Tue).</p>
         {needs.length > 0 ? (
           <table>
-            <thead><tr><th>Flavor</th><th className="c">Now</th><th className="c">Proj. Use</th><th className="c">By Monday</th><th className="c">Short</th><th className="c">Batches</th></tr></thead>
+            <thead><tr>
+              <th>Flavor</th>
+              <th className="c">On Hand</th>
+              <th className="c">Velocity /wk</th>
+              <th className="c">Demand {projDays}d</th>
+              <th className="c">Projected End</th>
+              <th className="c">Batches</th>
+            </tr></thead>
             <tbody>{needs.map(p => (
-              <tr key={p.flavor.id}>
-                <td><Dot color={p.batches>=3?'var(--red)':p.batches>=2?'var(--yellow)':'var(--green)'}/><span style={{fontWeight:500}}>{p.flavor.name}</span>
+              <tr key={p.flavor.id} className={p.critical?'critical':''}>
+                <td>
+                  <Dot color={p.critical?'var(--red)':p.batches>=3?'var(--yellow)':'var(--blue)'}/>
+                  <span style={{fontWeight:500}}>{p.flavor.name}</span>
                   {p.tcNeedsTransfer && <Tag color="var(--blue)">TC TRANSFER</Tag>}
                   {p.upcomingDemand > 0 && <Tag color="var(--orange)">+{p.upcomingDemand} order</Tag>}
+                  {!p.velocityReliable && <Tag color="var(--gray)">LIMITED DATA</Tag>}
                 </td>
-                <td className="c">{p.current}</td>
-                <td className="c" style={{color:'var(--gray)'}}>{p.projectedUse}</td>
-                <td className="c" style={{color:p.projectedEnd<0?'var(--red)':'var(--gray)'}}>{p.projectedEnd}</td>
-                <td className="c" style={{color:'var(--red)',fontWeight:600}}>{p.binsNeeded}</td>
-                <td className="c"><span style={{background:'rgba(162,204,235,.15)',color:'var(--blue)',fontWeight:700,padding:'4px 12px',borderRadius:6,fontSize:14}} className="serif">{p.batches}</span></td>
+                <td className="c" style={{fontWeight:600}}>{p.current}
+                  <div style={{fontSize:10,color:'var(--gray)',fontWeight:400}}>P:{p.petoskey} TC:{p.tc}</div>
+                </td>
+                <td className="c" style={{color:'var(--gray)'}}>{p.velocity}</td>
+                <td className="c" style={{color:'var(--gray)'}}>{p.totalDemand}</td>
+                <td className="c" style={{color:p.endingWithoutProduction<0?'var(--red)':p.endingWithoutProduction<p.targetEnding?'var(--yellow)':'var(--gray)',fontWeight:p.endingWithoutProduction<0?700:400}}>{p.endingWithoutProduction}</td>
+                <td className="c">
+                  <span className="serif" style={{background:'rgba(162,204,235,.15)',color:'var(--blue)',fontWeight:700,padding:'4px 12px',borderRadius:6,fontSize:14}}>{p.batches}</span>
+                </td>
               </tr>
             ))}</tbody>
           </table>
-        ) : <p style={{color:'var(--green)',padding:20,textAlign:'center'}}>✓ All flavors stocked through next Monday.</p>}
-        {stocked.length > 0 && <div style={{marginTop:14}}><div className="section-label" style={{color:'var(--green)'}}>Stocked</div><div style={{display:'flex',flexWrap:'wrap',gap:6,padding:'0 12px'}}>{stocked.map(p => <span key={p.flavor.id} style={{padding:'4px 10px',borderRadius:6,background:'rgba(76,175,80,.08)',color:'var(--green)',fontSize:12}}>{p.flavor.name} ({p.current})</span>)}</div></div>}
+        ) : (
+          <p style={{color:'var(--green)',padding:20,textAlign:'center'}}>✓ All flavors stocked through the projection window.</p>
+        )}
+
+        {stocked.length > 0 && (
+          <div style={{marginTop:14}}>
+            <div className="section-label" style={{color:'var(--green)'}}>Stocked — Skip Next Week</div>
+            <div className="stocked-chips" style={{padding:'0 12px'}}>
+              {stocked.map(p => (
+                <span key={p.flavor.id} className="stocked-chip">
+                  {p.flavor.name} ({p.current})
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -694,11 +1011,38 @@ function SettingsTab({flavors, onRefresh}) {
   const [pantryEdits, setPantryEdits] = useState({});
   const [savingPantry, setSavingPantry] = useState(false);
   const [ingredients, setIngredients] = useState([]);
+  const [employees, setEmployees] = useState([]);
+  const [newEmpName, setNewEmpName] = useState('');
 
   useEffect(() => {
     db('base_doughs','select').then(d=>setBases(d.data||[]));
     loadPantry();
+    loadEmployees();
   }, []);
+
+  const loadEmployees = async () => {
+    const {data} = await db('employees','select',{orderBy:'name'});
+    setEmployees(data || []);
+  };
+
+  const addEmployee = async () => {
+    const name = newEmpName.trim();
+    if (!name) return;
+    await db('employees','insert',{data:{name, active:true}});
+    setNewEmpName('');
+    loadEmployees();
+  };
+
+  const toggleEmployee = async (emp) => {
+    await db('employees','update',{id:emp.id, data:{active:!emp.active}});
+    loadEmployees();
+  };
+
+  const deleteEmployee = async (emp) => {
+    if (!confirm(`Delete ${emp.name}? This cannot be undone. (Consider deactivating instead to preserve history.)`)) return;
+    await db('employees','delete',{id:emp.id});
+    loadEmployees();
+  };
 
   const loadPantry = async () => {
     const {data: p} = await db('pantry','select',{orderBy:'ingredient_id'});
@@ -744,6 +1088,7 @@ function SettingsTab({flavors, onRefresh}) {
       <div className="tab-pills">
         <button className={settingsTab==='flavors'?'active':''} onClick={()=>setSettingsTab('flavors')}>Flavors</button>
         <button className={settingsTab==='pantry'?'active':''} onClick={()=>setSettingsTab('pantry')}>Pantry & Par Levels</button>
+        <button className={settingsTab==='employees'?'active':''} onClick={()=>setSettingsTab('employees')}>Employees</button>
       </div>
 
       {settingsTab === 'flavors' && (
@@ -802,6 +1147,67 @@ function SettingsTab({flavors, onRefresh}) {
         </div>
       )}
 
+      {settingsTab === 'employees' && (
+        <div className="card">
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12,flexWrap:'wrap',gap:10}}>
+            <div>
+              <h3>Employees</h3>
+              <p className="sub">Who can be selected when counting bins. Deactivate to hide from the dropdown while keeping historical records.</p>
+            </div>
+          </div>
+          <div style={{display:'flex',gap:10,marginBottom:16,flexWrap:'wrap'}}>
+            <input
+              className="input-wide"
+              style={{flex:1,minWidth:200,maxWidth:360}}
+              placeholder="Employee name"
+              value={newEmpName}
+              onChange={e=>setNewEmpName(e.target.value)}
+              onKeyDown={e=>e.key==='Enter'&&addEmployee()}
+            />
+            <button className="btn btn-blue" onClick={addEmployee} disabled={!newEmpName.trim()}>
+              + Add Employee
+            </button>
+          </div>
+          {employees.length === 0 ? (
+            <p style={{color:'var(--gray)',padding:20,textAlign:'center',fontSize:13}}>
+              No employees yet. Add the people who do nightly counts so they can be selected in the count screen.
+            </p>
+          ) : (
+            <table>
+              <thead><tr>
+                <th>Name</th>
+                <th className="c">Status</th>
+                <th className="c">Added</th>
+                <th className="c" style={{width:160}}>Actions</th>
+              </tr></thead>
+              <tbody>{employees.map(emp => (
+                <tr key={emp.id}>
+                  <td style={{fontWeight:500}}>{emp.name}</td>
+                  <td className="c">
+                    {emp.active
+                      ? <span style={{color:'var(--green)',fontSize:12,fontWeight:600}}>● Active</span>
+                      : <span style={{color:'var(--gray2)',fontSize:12}}>○ Inactive</span>}
+                  </td>
+                  <td className="c" style={{color:'var(--gray)',fontSize:12}}>
+                    {emp.created_at ? new Date(emp.created_at).toLocaleDateString() : '—'}
+                  </td>
+                  <td className="c">
+                    <button className="btn btn-outline" style={{fontSize:11,padding:'4px 10px',marginRight:6}}
+                      onClick={()=>toggleEmployee(emp)}>
+                      {emp.active ? 'Deactivate' : 'Reactivate'}
+                    </button>
+                    <button className="btn btn-outline" style={{fontSize:11,padding:'4px 10px',color:'var(--red)',borderColor:'rgba(239,83,80,.3)'}}
+                      onClick={()=>deleteEmployee(emp)}>
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              ))}</tbody>
+            </table>
+          )}
+        </div>
+      )}
+
       {showAdd && (
         <div className="modal-overlay" onClick={()=>setShowAdd(false)}><div className="modal" onClick={e=>e.stopPropagation()}>
           <h3 className="serif" style={{marginBottom:16}}>Add New Flavor</h3>
@@ -828,7 +1234,6 @@ function App() {
   const [flavors, setFlavors] = useState([]);
   const [dashData, setDashData] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [needsSetup, setNeedsSetup] = useState(false);
 
   useEffect(() => { const saved = localStorage.getItem('jojo_inv_token'); if (saved) { AUTH_TOKEN = saved; setAuthed(true); } }, []);
 
@@ -837,8 +1242,6 @@ function App() {
     try {
       const {data: fl} = await db('flavors','select',{filters:{active:true},orderBy:'type'});
       setFlavors(fl || []);
-      const {data: snaps} = await db('inventory_snapshots','select',{limit:1});
-      if (!snaps || snaps.length === 0) { setNeedsSetup(true); setLoading(false); return; }
       const dash = await api('dashboard');
       setDashData(dash);
     } catch(e) { console.error('Load error:', e); }
@@ -849,17 +1252,15 @@ function App() {
 
   if (!authed) return <LoginScreen onLogin={()=>setAuthed(true)}/>;
   if (loading) return <div className="login-wrap"><div style={{textAlign:'center'}}><p style={{color:'var(--gray)'}}>Loading...</p></div></div>;
-  if (needsSetup) return <InitialSetup flavors={flavors} onComplete={()=>{setNeedsSetup(false);loadData();}}/>;
 
   const tabs = [
     {id:'production',label:'Production'},
     {id:'prep',label:'Prep List'},
-    {id:'dough',label:'Dough Bins'},
+    {id:'dough',label:'Nightly Count'},
     {id:'orders',label:'Order Lists'},
     {id:'manual',label:'Orders'},
     {id:'log',label:'Log Production'},
     {id:'transfers',label:'Transfers'},
-    {id:'sync',label:'Sync'},
     {id:'settings',label:'Settings'},
   ];
 
@@ -878,14 +1279,13 @@ function App() {
         ) : <div style={{width:160}}/>}
       </header>
       <main>
-        {tab==='dough' && <DoughTab loc={loc} flavors={flavors} dashData={dashData}/>}
+        {tab==='dough' && <DoughTab loc={loc} flavors={flavors} dashData={dashData} onSaved={loadData}/>}
         {tab==='production' && <ProductionTab dashData={dashData}/>}
         {tab==='prep' && <PrepListTab dashData={dashData}/>}
         {tab==='orders' && <OrdersTab dashData={dashData}/>}
         {tab==='manual' && <ManualOrdersTab flavors={flavors}/>}
         {tab==='log' && <LogProductionTab flavors={flavors}/>}
         {tab==='transfers' && <TransfersTab flavors={flavors}/>}
-        {tab==='sync' && <SyncTab/>}
         {tab==='settings' && <SettingsTab flavors={flavors} onRefresh={loadData}/>}
       </main>
     </div>
