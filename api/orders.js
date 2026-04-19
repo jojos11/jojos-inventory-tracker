@@ -18,7 +18,7 @@ module.exports = async (req, res) => {
 
     const { data: baseIngredients } = await supabase.from('base_dough_ingredients').select('*');
     const { data: flavorIngredients } = await supabase.from('flavor_ingredients').select('*');
-    const { data: flavors } = await supabase.from('flavors').select('*').eq('active', true);
+    const { data: flavors } = await supabase.from('flavors').select('*').in('status', ['live','pre_production']);
     const flavorMap = {};
     for (const f of flavors) flavorMap[f.id] = f;
     const { data: subRecipeIngredients } = await supabase.from('sub_recipe_ingredients').select('*');

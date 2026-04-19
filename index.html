@@ -210,12 +210,14 @@ function LoginScreen({onLogin}) {
   );
 }
 
-// ─── INITIAL SETUP ──────────────────
 // ─── NIGHTLY COUNT TAB (replaces old DoughTab + InitialSetup) ───────────────
 function DoughTab({loc, setLoc, flavors, dashData, onSaved}) {
   const locId = loc === 'petoskey' ? 1 : 2;
   const locName = loc === 'petoskey' ? 'Petoskey' : 'Traverse City';
   const storageKey = `jojo_count_draft_${locId}`;
+
+  // Nightly count only operates on LIVE flavors — pre_production flavors have no bins yet
+  const liveFlavors = flavors.filter(f => f.status === 'live' || !f.status);
 
   const [employees, setEmployees] = useState([]);
   const [countedBy, setCountedBy] = useState('');
@@ -237,7 +239,7 @@ function DoughTab({loc, setLoc, flavors, dashData, onSaved}) {
 
       // Get previous (most recent) count per flavor at this location
       const prev = {};
-      for (const f of flavors) {
+      for (const f of liveFlavors) {
         const {data} = await db('inventory_snapshots','select',{
           filters:{flavor_id:f.id,location_id:locId},
           orderBy:'created_at:desc',
@@ -312,8 +314,8 @@ function DoughTab({loc, setLoc, flavors, dashData, onSaved}) {
   };
 
   // Completion status for save button
-  const totalFlavors = flavors.length;
-  const completedFlavors = flavors.filter(f =>
+  const totalFlavors = liveFlavors.length;
+  const completedFlavors = liveFlavors.filter(f =>
     notStocked[f.id] || (counts[f.id] !== undefined && counts[f.id] !== '')
   ).length;
   const ready = countedBy && completedFlavors === totalFlavors;
@@ -324,7 +326,7 @@ function DoughTab({loc, setLoc, flavors, dashData, onSaved}) {
     const today = new Date().toISOString().split('T')[0];
 
     try {
-      for (const f of flavors) {
+      for (const f of liveFlavors) {
         const isNotStocked = !!notStocked[f.id];
         const raw = counts[f.id];
         const val = isNotStocked ? null : (raw === '' || raw === undefined ? null : parseFloat(raw));
@@ -369,7 +371,7 @@ function DoughTab({loc, setLoc, flavors, dashData, onSaved}) {
 
   const handleSaveClick = () => {
     // Check for any unconfirmed variances
-    const variant = flavors.find(f => {
+    const variant = liveFlavors.find(f => {
       if (notStocked[f.id]) return false;
       return hasVariance(f.id, counts[f.id]);
     });
@@ -428,9 +430,10 @@ function DoughTab({loc, setLoc, flavors, dashData, onSaved}) {
     );
   };
 
-  const classics = flavors.filter(f=>f.type==='classic');
-  const specialties = flavors.filter(f=>f.type==='specialty');
-  const extras = flavors.filter(f=>f.type==='extra');
+  // Nightly count only shows live flavors — pre_production flavors have no bins yet
+  const classics = liveFlavors.filter(f=>f.type==='classic');
+  const specialties = liveFlavors.filter(f=>f.type==='specialty');
+  const extras = liveFlavors.filter(f=>f.type==='extra');
 
   const countFreshness = dashData?.countFreshness || {};
   const fmtHours = (h) => {
@@ -1072,7 +1075,7 @@ function SyncTab() {
 function SettingsTab({flavors, onRefresh}) {
   const [settingsTab, setSettingsTab] = useState('flavors');
   const [showAdd, setShowAdd] = useState(false);
-  const [nf, setNf] = useState({name:'',type:'specialty',base_dough_id:'',is_stuffed:false,par_level_bins:6,restock_trigger_bins:3,month:'',year:2026});
+  const [nf, setNf] = useState({name:'',type:'specialty',base_dough_id:'',is_stuffed:false,par_level_bins:6,restock_trigger_bins:3,status:'live',schedule_start_month:'',schedule_start_year:2026,schedule_end_month:'',schedule_end_year:2026,schedule_repeats:false});
   const [bases, setBases] = useState([]);
   const [pantryItems, setPantryItems] = useState([]);
   const [pantryEdits, setPantryEdits] = useState({});
@@ -1081,11 +1084,35 @@ function SettingsTab({flavors, onRefresh}) {
   const [employees, setEmployees] = useState([]);
   const [newEmpName, setNewEmpName] = useState('');
 
+  // Flavor lifecycle state
+  const [allFlavors, setAllFlavors] = useState([]);   // includes retired
+  const [schedule, setSchedule] = useState([]);        // flavor_schedule rows
+  const [flavorEdits, setFlavorEdits] = useState({}); // {flavorId: {field: val}}
+  const [savingFlavor, setSavingFlavor] = useState(null);
+  const [showScheduleAdd, setShowScheduleAdd] = useState(false);
+  const [newSched, setNewSched] = useState({flavor_id:'',start_month:'',start_year:2026,end_month:'',end_year:2026,repeats_annually:false,notes:''});
+  const [showRetired, setShowRetired] = useState(false);
+
+  const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const monthIdx = m => MONTHS.indexOf(m);
+
   useEffect(() => {
     db('base_doughs','select').then(d=>setBases(d.data||[]));
     loadPantry();
     loadEmployees();
+    loadAllFlavors();
+    loadSchedule();
   }, []);
+
+  const loadAllFlavors = async () => {
+    const {data} = await db('flavors','select',{orderBy:'type'});
+    setAllFlavors(data || []);
+  };
+
+  const loadSchedule = async () => {
+    const {data} = await db('flavor_schedule','select',{orderBy:'start_year'});
+    setSchedule(data || []);
+  };
 
   const loadEmployees = async () => {
     const {data} = await db('employees','select',{orderBy:'name'});
@@ -1120,10 +1147,153 @@ function SettingsTab({flavors, onRefresh}) {
 
   const addFlavor = async () => {
     if (!nf.name) return;
-    await db('flavors','insert',{data:{name:nf.name, type:nf.type, base_dough_id:nf.base_dough_id?parseInt(nf.base_dough_id):null, is_stuffed:nf.is_stuffed, bin_capacity_cookies:nf.is_stuffed?56:80, par_level_bins:parseFloat(nf.par_level_bins), restock_trigger_bins:parseFloat(nf.restock_trigger_bins), batch_size_cookies:300, month:nf.month||null, year:nf.year||null, active:true}});
-    setShowAdd(false); setNf({name:'',type:'specialty',base_dough_id:'',is_stuffed:false,par_level_bins:6,restock_trigger_bins:3,month:'',year:2026}); onRefresh();
+    // Insert the flavor
+    const {data: inserted} = await db('flavors','insert',{data:{
+      name:nf.name,
+      type:nf.type,
+      base_dough_id:nf.base_dough_id?parseInt(nf.base_dough_id):null,
+      is_stuffed:nf.is_stuffed,
+      bin_capacity_cookies:nf.is_stuffed?56:80,
+      par_level_bins:parseFloat(nf.par_level_bins),
+      restock_trigger_bins:parseFloat(nf.restock_trigger_bins),
+      batch_size_cookies:300,
+      status: nf.status,
+      active: nf.status !== 'retired'
+    }});
+    // If a schedule was specified, create the schedule entry too
+    if (inserted && inserted[0] && nf.schedule_start_month && nf.schedule_end_month) {
+      await db('flavor_schedule','insert',{data:{
+        flavor_id: inserted[0].id,
+        start_month: nf.schedule_start_month,
+        start_year: parseInt(nf.schedule_start_year),
+        end_month: nf.schedule_end_month,
+        end_year: parseInt(nf.schedule_end_year),
+        repeats_annually: nf.schedule_repeats,
+        notes: null
+      }});
+    }
+    setShowAdd(false);
+    setNf({name:'',type:'specialty',base_dough_id:'',is_stuffed:false,par_level_bins:6,restock_trigger_bins:3,status:'live',schedule_start_month:'',schedule_start_year:2026,schedule_end_month:'',schedule_end_year:2026,schedule_repeats:false});
+    loadAllFlavors();
+    loadSchedule();
+    onRefresh();
   };
-  const deactivate = async (id) => { if(!confirm('Retire this flavor?'))return; await db('flavors','update',{id,data:{active:false}}); onRefresh(); };
+
+  // Change flavor status: pre_production | live | retired
+  const setFlavorStatus = async (flavorId, newStatus) => {
+    setSavingFlavor(flavorId);
+    await db('flavors','update',{id:flavorId, data:{
+      status: newStatus,
+      active: newStatus !== 'retired'
+    }});
+    await loadAllFlavors();
+    onRefresh();
+    setSavingFlavor(null);
+  };
+
+  // Inline flavor edits
+  const setFlavorField = (flavorId, field, val) => {
+    setFlavorEdits(prev => ({...prev, [flavorId]: {...(prev[flavorId]||{}), [field]: val}}));
+  };
+
+  const saveFlavorEdit = async (flavorId) => {
+    const edits = flavorEdits[flavorId];
+    if (!edits) return;
+    setSavingFlavor(flavorId);
+    const data = {};
+    if ('name' in edits) data.name = edits.name;
+    if ('par_level_bins' in edits) data.par_level_bins = parseFloat(edits.par_level_bins);
+    if ('restock_trigger_bins' in edits) data.restock_trigger_bins = parseFloat(edits.restock_trigger_bins);
+    if ('is_stuffed' in edits) {
+      data.is_stuffed = edits.is_stuffed;
+      data.bin_capacity_cookies = edits.is_stuffed ? 56 : 80;
+    }
+    if ('base_dough_id' in edits) data.base_dough_id = edits.base_dough_id ? parseInt(edits.base_dough_id) : null;
+    await db('flavors','update',{id:flavorId, data});
+    setFlavorEdits(prev => { const n = {...prev}; delete n[flavorId]; return n; });
+    await loadAllFlavors();
+    onRefresh();
+    setSavingFlavor(null);
+  };
+
+  const cancelFlavorEdit = (flavorId) => {
+    setFlavorEdits(prev => { const n = {...prev}; delete n[flavorId]; return n; });
+  };
+
+  // Schedule operations
+  const addSchedule = async () => {
+    if (!newSched.flavor_id || !newSched.start_month || !newSched.end_month) return;
+    await db('flavor_schedule','insert',{data:{
+      flavor_id: parseInt(newSched.flavor_id),
+      start_month: newSched.start_month,
+      start_year: parseInt(newSched.start_year),
+      end_month: newSched.end_month,
+      end_year: parseInt(newSched.end_year),
+      repeats_annually: newSched.repeats_annually,
+      notes: newSched.notes || null
+    }});
+    setShowScheduleAdd(false);
+    setNewSched({flavor_id:'',start_month:'',start_year:2026,end_month:'',end_year:2026,repeats_annually:false,notes:''});
+    loadSchedule();
+  };
+
+  const deleteSchedule = async (id) => {
+    if (!confirm('Delete this scheduled run?')) return;
+    await db('flavor_schedule','delete',{id});
+    loadSchedule();
+  };
+
+  // Month transition helper: determine what needs to change based on current date
+  const getMonthTransitionPlan = () => {
+    const now = new Date();
+    const currentMonth = MONTHS[now.getMonth()];
+    const currentYear = now.getFullYear();
+
+    // Does a scheduled run "cover" this month? (accounting for annual repeats)
+    const isActiveNow = (sched) => {
+      const sMonth = monthIdx(sched.start_month), eMonth = monthIdx(sched.end_month);
+      const sYear = sched.start_year, eYear = sched.end_year;
+      const mIdx = monthIdx(currentMonth);
+
+      if (sched.repeats_annually) {
+        // Annual: ignore year, check month range
+        if (sMonth <= eMonth) return mIdx >= sMonth && mIdx <= eMonth;
+        return mIdx >= sMonth || mIdx <= eMonth; // wraps (e.g. Nov-Jan)
+      }
+      // One-off: must be within date range
+      const curDate = currentYear * 12 + mIdx;
+      const startDate = sYear * 12 + sMonth;
+      const endDate = eYear * 12 + eMonth;
+      return curDate >= startDate && curDate <= endDate;
+    };
+
+    const shouldBeLiveFlavorIds = new Set(
+      schedule.filter(isActiveNow).map(s => s.flavor_id)
+    );
+
+    // Specialties currently live that shouldn't be (past their run)
+    const toRetire = allFlavors.filter(f =>
+      f.type === 'specialty' &&
+      f.status === 'live' &&
+      !shouldBeLiveFlavorIds.has(f.id)
+    );
+
+    // Specialties currently pre_production that should be live now
+    const toGoLive = allFlavors.filter(f =>
+      f.type === 'specialty' &&
+      f.status === 'pre_production' &&
+      shouldBeLiveFlavorIds.has(f.id)
+    );
+
+    // Retired specialties that are scheduled to run now (e.g. annual repeats)
+    const toReactivate = allFlavors.filter(f =>
+      f.type === 'specialty' &&
+      f.status === 'retired' &&
+      shouldBeLiveFlavorIds.has(f.id)
+    );
+
+    return { toRetire, toGoLive, toReactivate, currentMonth, currentYear };
+  };
 
   const savePantryEdits = async () => {
     setSavingPantry(true);
@@ -1154,29 +1324,248 @@ function SettingsTab({flavors, onRefresh}) {
     <div>
       <div className="tab-pills">
         <button className={settingsTab==='flavors'?'active':''} onClick={()=>setSettingsTab('flavors')}>Flavors</button>
+        <button className={settingsTab==='schedule'?'active':''} onClick={()=>setSettingsTab('schedule')}>Schedule</button>
         <button className={settingsTab==='pantry'?'active':''} onClick={()=>setSettingsTab('pantry')}>Pantry & Par Levels</button>
         <button className={settingsTab==='employees'?'active':''} onClick={()=>setSettingsTab('employees')}>Employees</button>
       </div>
 
-      {settingsTab === 'flavors' && (
-        <div className="card">
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
-            <div><h3>Manage Flavors</h3><p className="sub">Add monthly specialties, retire flavors, adjust settings.</p></div>
-            <button className="btn btn-blue" onClick={()=>setShowAdd(true)}>+ Add Flavor</button>
-          </div>
-          <table><thead><tr><th>Flavor</th><th>Type</th><th className="c">Base</th><th className="c">Stuffed</th><th className="c">Bin Cap</th><th className="c">Par</th><th className="c">Trigger</th><th></th></tr></thead>
-          <tbody>{flavors.map(f=>(
+      {settingsTab === 'flavors' && (() => {
+        const liveFlavs = allFlavors.filter(f => f.status === 'live');
+        const preProdFlavs = allFlavors.filter(f => f.status === 'pre_production');
+        const retiredFlavs = allFlavors.filter(f => f.status === 'retired');
+        const liveClassics = liveFlavs.filter(f => f.type === 'classic');
+        const liveSpecialties = liveFlavs.filter(f => f.type === 'specialty');
+        const liveExtras = liveFlavs.filter(f => f.type === 'extra');
+        const transition = getMonthTransitionPlan();
+        const needsTransition = transition.toRetire.length > 0 || transition.toGoLive.length > 0 || transition.toReactivate.length > 0;
+
+        const renderFlavorRow = (f) => {
+          const editing = flavorEdits[f.id];
+          const isSaving = savingFlavor === f.id;
+          const baseLetters = ['','A','B','C','D','F'];
+          return (
             <tr key={f.id}>
-              <td style={{fontWeight:500}}>{f.name}</td>
-              <td><Tag color={f.type==='classic'?'var(--blue)':f.type==='specialty'?'var(--orange)':'var(--green)'}>{f.type.toUpperCase()}</Tag></td>
-              <td className="c">{f.base_dough_id?['','A','B','C','D','F'][f.base_dough_id]||'?':'—'}</td>
-              <td className="c">{f.is_stuffed?'✓':'—'}</td>
-              <td className="c">{f.bin_capacity_cookies}</td>
-              <td className="c">{f.par_level_bins}</td>
-              <td className="c">{f.restock_trigger_bins}</td>
-              <td className="c">{f.type!=='classic'&&<button className="btn btn-outline" style={{fontSize:10,padding:'2px 6px'}} onClick={()=>deactivate(f.id)}>Retire</button>}</td>
+              <td style={{fontWeight:500}}>
+                {editing && 'name' in editing ? (
+                  <input className="input-wide" style={{maxWidth:180}} value={editing.name} onChange={e=>setFlavorField(f.id,'name',e.target.value)}/>
+                ) : (
+                  <span onClick={()=>setFlavorField(f.id,'name',f.name)} style={{cursor:'text'}}>{f.name}</span>
+                )}
+              </td>
+              <td>
+                <Tag color={f.type==='classic'?'var(--blue)':f.type==='specialty'?'var(--orange)':'var(--green)'}>{f.type.toUpperCase()}</Tag>
+              </td>
+              <td className="c">
+                {editing ? (
+                  <select className="select" style={{width:80}} value={editing.base_dough_id ?? (f.base_dough_id||'')} onChange={e=>setFlavorField(f.id,'base_dough_id',e.target.value)}>
+                    <option value="">—</option>
+                    {bases.map(b=><option key={b.id} value={b.id}>{b.label||b.name}</option>)}
+                  </select>
+                ) : (f.base_dough_id ? baseLetters[f.base_dough_id] || '?' : '—')}
+              </td>
+              <td className="c">
+                {editing ? (
+                  <input type="checkbox" checked={editing.is_stuffed ?? f.is_stuffed} onChange={e=>setFlavorField(f.id,'is_stuffed',e.target.checked)}/>
+                ) : (f.is_stuffed ? '✓' : '—')}
+              </td>
+              <td className="c" style={{color:'var(--gray)',fontSize:12}}>{f.bin_capacity_cookies}</td>
+              <td className="c">
+                {editing ? (
+                  <input className="input" type="number" step="0.25" value={editing.par_level_bins ?? f.par_level_bins} onChange={e=>setFlavorField(f.id,'par_level_bins',e.target.value)}/>
+                ) : f.par_level_bins}
+              </td>
+              <td className="c">
+                {editing ? (
+                  <input className="input" type="number" step="0.25" value={editing.restock_trigger_bins ?? f.restock_trigger_bins} onChange={e=>setFlavorField(f.id,'restock_trigger_bins',e.target.value)}/>
+                ) : f.restock_trigger_bins}
+              </td>
+              <td className="c" style={{whiteSpace:'nowrap'}}>
+                {editing ? (
+                  <>
+                    <button className="btn btn-green" style={{fontSize:10,padding:'3px 8px',marginRight:4}} onClick={()=>saveFlavorEdit(f.id)} disabled={isSaving}>{isSaving?'...':'Save'}</button>
+                    <button className="btn btn-outline" style={{fontSize:10,padding:'3px 8px'}} onClick={()=>cancelFlavorEdit(f.id)}>Cancel</button>
+                  </>
+                ) : (
+                  <>
+                    <button className="btn btn-outline" style={{fontSize:10,padding:'3px 8px',marginRight:4}} onClick={()=>setFlavorField(f.id,'name',f.name)}>Edit</button>
+                    {f.type !== 'classic' && f.status !== 'retired' && (
+                      <button className="btn btn-outline" style={{fontSize:10,padding:'3px 8px',color:'var(--red)',borderColor:'rgba(239,83,80,.3)'}} onClick={()=>{if(confirm(`Retire ${f.name}? Bins will sell through as-is.`))setFlavorStatus(f.id,'retired');}} disabled={isSaving}>Retire</button>
+                    )}
+                    {f.status === 'pre_production' && (
+                      <button className="btn btn-blue" style={{fontSize:10,padding:'3px 8px'}} onClick={()=>setFlavorStatus(f.id,'live')} disabled={isSaving}>Go Live</button>
+                    )}
+                  </>
+                )}
+              </td>
             </tr>
-          ))}</tbody></table>
+          );
+        };
+
+        const renderRetiredRow = (f) => {
+          const isSaving = savingFlavor === f.id;
+          return (
+            <tr key={f.id} style={{opacity:.65}}>
+              <td style={{fontWeight:500}}>{f.name}</td>
+              <td><Tag color="var(--gray)">{f.type.toUpperCase()}</Tag></td>
+              <td className="c" colSpan={5} style={{fontSize:12,color:'var(--gray)'}}>Retired — recipe preserved</td>
+              <td className="c" style={{whiteSpace:'nowrap'}}>
+                <button className="btn btn-green" style={{fontSize:10,padding:'3px 8px',marginRight:4}} onClick={()=>setFlavorStatus(f.id,'live')} disabled={isSaving}>Bring Back</button>
+                <button className="btn btn-outline" style={{fontSize:10,padding:'3px 8px'}} onClick={()=>setFlavorStatus(f.id,'pre_production')} disabled={isSaving}>Pre-production</button>
+              </td>
+            </tr>
+          );
+        };
+
+        return (
+          <>
+            {/* Menu Overview */}
+            <div className="card">
+              <h3>Menu Overview</h3>
+              <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:10,marginTop:10}}>
+                <div style={{background:'var(--bg)',borderRadius:8,padding:12,borderLeft:'3px solid var(--green)'}}>
+                  <div className="serif" style={{fontSize:22,fontWeight:700,color:'var(--green)'}}>{liveFlavs.length}</div>
+                  <div style={{fontSize:11,color:'var(--gray)',textTransform:'uppercase',letterSpacing:'.8px'}}>Live on Menu</div>
+                  <div style={{fontSize:11,color:'var(--gray)',marginTop:4}}>{liveClassics.length} classics · {liveSpecialties.length} specialties · {liveExtras.length} extras</div>
+                </div>
+                <div style={{background:'var(--bg)',borderRadius:8,padding:12,borderLeft:'3px solid var(--blue)'}}>
+                  <div className="serif" style={{fontSize:22,fontWeight:700,color:'var(--blue)'}}>{preProdFlavs.length}</div>
+                  <div style={{fontSize:11,color:'var(--gray)',textTransform:'uppercase',letterSpacing:'.8px'}}>Pre-production</div>
+                  <div style={{fontSize:11,color:'var(--gray)',marginTop:4}}>{preProdFlavs.length > 0 ? preProdFlavs.map(f=>f.name).join(', ') : 'None scheduled'}</div>
+                </div>
+                <div style={{background:'var(--bg)',borderRadius:8,padding:12,borderLeft:'3px solid var(--gray2)'}}>
+                  <div className="serif" style={{fontSize:22,fontWeight:700,color:'var(--gray)'}}>{retiredFlavs.length}</div>
+                  <div style={{fontSize:11,color:'var(--gray)',textTransform:'uppercase',letterSpacing:'.8px'}}>Retired</div>
+                  <div style={{fontSize:11,color:'var(--gray)',marginTop:4}}>Ready to bring back</div>
+                </div>
+              </div>
+            </div>
+
+            {/* Month Transition Card (only shows when needed) */}
+            {needsTransition && (
+              <div className="card" style={{borderLeft:'3px solid var(--yellow)'}}>
+                <h3 style={{color:'var(--yellow)'}}>⚠ Menu Transition Needed — {transition.currentMonth} {transition.currentYear}</h3>
+                <p className="sub">The schedule says your menu should look different right now. Review and apply.</p>
+
+                {transition.toRetire.length > 0 && (
+                  <div style={{marginTop:12}}>
+                    <div className="section-label" style={{color:'var(--red)'}}>Should be retired (past scheduled run)</div>
+                    {transition.toRetire.map(f => (
+                      <div key={f.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 12px',borderBottom:'1px solid rgba(51,51,51,.15)'}}>
+                        <span>{f.name}</span>
+                        <div>
+                          <button className="btn btn-outline" style={{fontSize:11,padding:'4px 10px',marginRight:6}} onClick={()=>setFlavorStatus(f.id,'retired')}>Retire</button>
+                          <span style={{fontSize:11,color:'var(--gray)'}}>or keep it live manually</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {transition.toGoLive.length > 0 && (
+                  <div style={{marginTop:12}}>
+                    <div className="section-label" style={{color:'var(--blue)'}}>Ready to go live (currently in pre-production)</div>
+                    {transition.toGoLive.map(f => (
+                      <div key={f.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 12px',borderBottom:'1px solid rgba(51,51,51,.15)'}}>
+                        <span>{f.name}</span>
+                        <button className="btn btn-blue" style={{fontSize:11,padding:'4px 10px'}} onClick={()=>setFlavorStatus(f.id,'live')}>Go Live</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {transition.toReactivate.length > 0 && (
+                  <div style={{marginTop:12}}>
+                    <div className="section-label" style={{color:'var(--green)'}}>Scheduled to return this month (currently retired)</div>
+                    {transition.toReactivate.map(f => (
+                      <div key={f.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 12px',borderBottom:'1px solid rgba(51,51,51,.15)'}}>
+                        <span>{f.name}</span>
+                        <div>
+                          <button className="btn btn-green" style={{fontSize:11,padding:'4px 10px',marginRight:6}} onClick={()=>setFlavorStatus(f.id,'live')}>Bring Back Live</button>
+                          <button className="btn btn-outline" style={{fontSize:11,padding:'4px 10px'}} onClick={()=>setFlavorStatus(f.id,'pre_production')}>Pre-production</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* All Flavors Table */}
+            <div className="card">
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12,flexWrap:'wrap',gap:8}}>
+                <div><h3>All Flavors</h3><p className="sub">Edit settings, change lifecycle status, add new flavors.</p></div>
+                <button className="btn btn-blue" onClick={()=>setShowAdd(true)}>+ Add Flavor</button>
+              </div>
+
+              <table>
+                <thead><tr><th>Flavor</th><th>Type</th><th className="c">Base</th><th className="c">Stuffed</th><th className="c">Bin Cap</th><th className="c">Par</th><th className="c">Trigger</th><th className="c" style={{width:200}}>Actions</th></tr></thead>
+                <tbody>
+                  {liveClassics.length > 0 && (<>
+                    <tr><td colSpan={8} className="section-label" style={{color:'var(--blue)'}}>Classics ({liveClassics.length}) — always live</td></tr>
+                    {liveClassics.map(renderFlavorRow)}
+                  </>)}
+                  {liveSpecialties.length > 0 && (<>
+                    <tr><td colSpan={8} className="section-label" style={{color:'var(--orange)'}}>Live Specialties ({liveSpecialties.length})</td></tr>
+                    {liveSpecialties.map(renderFlavorRow)}
+                  </>)}
+                  {liveExtras.length > 0 && (<>
+                    <tr><td colSpan={8} className="section-label" style={{color:'var(--green)'}}>Extras ({liveExtras.length})</td></tr>
+                    {liveExtras.map(renderFlavorRow)}
+                  </>)}
+                  {preProdFlavs.length > 0 && (<>
+                    <tr><td colSpan={8} className="section-label" style={{color:'var(--blue)'}}>Pre-production ({preProdFlavs.length}) — in Production Plan, not in Nightly Count</td></tr>
+                    {preProdFlavs.map(renderFlavorRow)}
+                  </>)}
+                </tbody>
+              </table>
+
+              {retiredFlavs.length > 0 && (
+                <div style={{marginTop:20}}>
+                  <button className="btn btn-outline" onClick={()=>setShowRetired(!showRetired)} style={{width:'100%',padding:'10px'}}>
+                    {showRetired ? '▾' : '▸'} Retired Flavors ({retiredFlavs.length}) — click to {showRetired ? 'hide' : 'show'}
+                  </button>
+                  {showRetired && (
+                    <table style={{marginTop:10}}>
+                      <tbody>{retiredFlavs.map(renderRetiredRow)}</tbody>
+                    </table>
+                  )}
+                </div>
+              )}
+            </div>
+          </>
+        );
+      })()}
+
+      {settingsTab === 'schedule' && (
+        <div className="card">
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12,flexWrap:'wrap',gap:8}}>
+            <div><h3>Flavor Schedule</h3><p className="sub">When each specialty runs. Annual repeats auto-return every year.</p></div>
+            <button className="btn btn-blue" onClick={()=>setShowScheduleAdd(true)}>+ Add Scheduled Run</button>
+          </div>
+          {schedule.length === 0 ? (
+            <p style={{color:'var(--gray)',padding:20,textAlign:'center',fontSize:13}}>No scheduled runs yet. Add one to plan a specialty's menu window.</p>
+          ) : (
+            <table>
+              <thead><tr><th>Flavor</th><th className="c">Starts</th><th className="c">Ends</th><th className="c">Annual?</th><th>Notes</th><th className="c">Actions</th></tr></thead>
+              <tbody>{schedule.sort((a,b)=>{
+                const ay = a.start_year, by = b.start_year;
+                if (ay !== by) return by - ay;
+                return monthIdx(b.start_month) - monthIdx(a.start_month);
+              }).map(s => {
+                const flav = allFlavors.find(f => f.id === s.flavor_id);
+                return (
+                  <tr key={s.id}>
+                    <td style={{fontWeight:500}}>{flav ? flav.name : `Flavor #${s.flavor_id}`}</td>
+                    <td className="c">{s.start_month} {s.start_year}</td>
+                    <td className="c">{s.end_month} {s.end_year}</td>
+                    <td className="c">{s.repeats_annually ? <Tag color="var(--green)">ANNUAL</Tag> : '—'}</td>
+                    <td style={{fontSize:12,color:'var(--gray)'}}>{s.notes || '—'}</td>
+                    <td className="c"><button className="btn btn-outline" style={{fontSize:10,padding:'3px 8px',color:'var(--red)',borderColor:'rgba(239,83,80,.3)'}} onClick={()=>deleteSchedule(s.id)}>Delete</button></td>
+                  </tr>
+                );
+              })}</tbody>
+            </table>
+          )}
         </div>
       )}
 
@@ -1280,12 +1669,119 @@ function SettingsTab({flavors, onRefresh}) {
           <h3 className="serif" style={{marginBottom:16}}>Add New Flavor</h3>
           <div style={{display:'flex',flexDirection:'column',gap:10}}>
             <input className="input-wide" placeholder="Flavor name" value={nf.name} onChange={e=>setNf({...nf,name:e.target.value})} autoFocus/>
-            <select className="select" value={nf.type} onChange={e=>setNf({...nf,type:e.target.value})}><option value="specialty">Monthly Specialty</option><option value="extra">Extra</option><option value="classic">Classic</option></select>
-            <select className="select" value={nf.base_dough_id} onChange={e=>setNf({...nf,base_dough_id:e.target.value})}><option value="">Standalone (no base)</option>{bases.map(b=><option key={b.id} value={b.id}>{b.name} ({b.label})</option>)}</select>
-            <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,color:'var(--gray)',cursor:'pointer'}}><input type="checkbox" checked={nf.is_stuffed} onChange={e=>setNf({...nf,is_stuffed:e.target.checked})}/> Stuffed cookie (bins hold ~56 instead of ~80)</label>
-            <div style={{display:'flex',gap:8}}><div style={{flex:1}}><label style={{fontSize:11,color:'var(--gray)'}}>Par Level (bins)</label><input className="input-wide" type="number" value={nf.par_level_bins} onChange={e=>setNf({...nf,par_level_bins:e.target.value})}/></div><div style={{flex:1}}><label style={{fontSize:11,color:'var(--gray)'}}>Restock Trigger</label><input className="input-wide" type="number" value={nf.restock_trigger_bins} onChange={e=>setNf({...nf,restock_trigger_bins:e.target.value})}/></div></div>
-            {nf.type==='specialty'&&<div style={{display:'flex',gap:8}}><div style={{flex:1}}><label style={{fontSize:11,color:'var(--gray)'}}>Month</label><input className="input-wide" placeholder="April" value={nf.month} onChange={e=>setNf({...nf,month:e.target.value})}/></div><div style={{flex:1}}><label style={{fontSize:11,color:'var(--gray)'}}>Year</label><input className="input-wide" type="number" value={nf.year} onChange={e=>setNf({...nf,year:e.target.value})}/></div></div>}
-            <div style={{display:'flex',gap:8,marginTop:6}}><button className="btn btn-outline" style={{flex:1}} onClick={()=>setShowAdd(false)}>Cancel</button><button className="btn btn-green" style={{flex:1}} onClick={addFlavor}>Add Flavor</button></div>
+            <select className="select" value={nf.type} onChange={e=>setNf({...nf,type:e.target.value})}>
+              <option value="specialty">Monthly Specialty</option>
+              <option value="extra">Extra</option>
+              <option value="classic">Classic</option>
+            </select>
+            <select className="select" value={nf.base_dough_id} onChange={e=>setNf({...nf,base_dough_id:e.target.value})}>
+              <option value="">Standalone (no base)</option>
+              {bases.map(b=><option key={b.id} value={b.id}>{b.name} ({b.label})</option>)}
+            </select>
+            <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,color:'var(--gray)',cursor:'pointer'}}>
+              <input type="checkbox" checked={nf.is_stuffed} onChange={e=>setNf({...nf,is_stuffed:e.target.checked})}/> Stuffed cookie (bins hold ~56 instead of ~80)
+            </label>
+            <div style={{display:'flex',gap:8}}>
+              <div style={{flex:1}}><label style={{fontSize:11,color:'var(--gray)'}}>Par Level (bins per location)</label><input className="input-wide" type="number" step="0.25" value={nf.par_level_bins} onChange={e=>setNf({...nf,par_level_bins:e.target.value})}/></div>
+              <div style={{flex:1}}><label style={{fontSize:11,color:'var(--gray)'}}>Restock Trigger</label><input className="input-wide" type="number" step="0.25" value={nf.restock_trigger_bins} onChange={e=>setNf({...nf,restock_trigger_bins:e.target.value})}/></div>
+            </div>
+
+            <div>
+              <label style={{fontSize:11,color:'var(--gray)',textTransform:'uppercase',letterSpacing:'.8px'}}>Lifecycle Status</label>
+              <select className="select" value={nf.status} onChange={e=>setNf({...nf,status:e.target.value})}>
+                <option value="live">Live — on menu now, counts in Nightly Count</option>
+                <option value="pre_production">Pre-production — in Production Plan but not Nightly Count</option>
+                <option value="retired">Retired — recipe only, no activity</option>
+              </select>
+            </div>
+
+            {nf.type === 'specialty' && (
+              <div style={{background:'var(--bg)',padding:12,borderRadius:8,marginTop:4}}>
+                <label style={{fontSize:11,color:'var(--gray)',textTransform:'uppercase',letterSpacing:'.8px',marginBottom:6,display:'block'}}>Optional: Schedule Menu Run</label>
+                <div style={{display:'flex',gap:8,marginBottom:8}}>
+                  <div style={{flex:1}}>
+                    <label style={{fontSize:10,color:'var(--gray)'}}>Start Month</label>
+                    <select className="select" value={nf.schedule_start_month} onChange={e=>setNf({...nf,schedule_start_month:e.target.value})}>
+                      <option value="">—</option>
+                      {MONTHS.map(m=><option key={m} value={m}>{m}</option>)}
+                    </select>
+                  </div>
+                  <div style={{width:80}}>
+                    <label style={{fontSize:10,color:'var(--gray)'}}>Year</label>
+                    <input className="input-wide" type="number" value={nf.schedule_start_year} onChange={e=>setNf({...nf,schedule_start_year:e.target.value})}/>
+                  </div>
+                </div>
+                <div style={{display:'flex',gap:8,marginBottom:8}}>
+                  <div style={{flex:1}}>
+                    <label style={{fontSize:10,color:'var(--gray)'}}>End Month</label>
+                    <select className="select" value={nf.schedule_end_month} onChange={e=>setNf({...nf,schedule_end_month:e.target.value})}>
+                      <option value="">—</option>
+                      {MONTHS.map(m=><option key={m} value={m}>{m}</option>)}
+                    </select>
+                  </div>
+                  <div style={{width:80}}>
+                    <label style={{fontSize:10,color:'var(--gray)'}}>Year</label>
+                    <input className="input-wide" type="number" value={nf.schedule_end_year} onChange={e=>setNf({...nf,schedule_end_year:e.target.value})}/>
+                  </div>
+                </div>
+                <label style={{display:'flex',alignItems:'center',gap:8,fontSize:12,color:'var(--gray)',cursor:'pointer'}}>
+                  <input type="checkbox" checked={nf.schedule_repeats} onChange={e=>setNf({...nf,schedule_repeats:e.target.checked})}/>
+                  Repeats annually (e.g. Lucky Charm every March)
+                </label>
+              </div>
+            )}
+
+            <div style={{display:'flex',gap:8,marginTop:6}}>
+              <button className="btn btn-outline" style={{flex:1}} onClick={()=>setShowAdd(false)}>Cancel</button>
+              <button className="btn btn-green" style={{flex:1}} onClick={addFlavor} disabled={!nf.name}>Add Flavor</button>
+            </div>
+          </div>
+        </div></div>
+      )}
+
+      {showScheduleAdd && (
+        <div className="modal-overlay" onClick={()=>setShowScheduleAdd(false)}><div className="modal" onClick={e=>e.stopPropagation()}>
+          <h3 className="serif" style={{marginBottom:16}}>Schedule a Flavor Run</h3>
+          <div style={{display:'flex',flexDirection:'column',gap:10}}>
+            <select className="select" value={newSched.flavor_id} onChange={e=>setNewSched({...newSched,flavor_id:e.target.value})}>
+              <option value="">Choose flavor...</option>
+              {allFlavors.sort((a,b)=>a.name.localeCompare(b.name)).map(f=><option key={f.id} value={f.id}>{f.name} ({f.type})</option>)}
+            </select>
+            <div style={{display:'flex',gap:8}}>
+              <div style={{flex:1}}>
+                <label style={{fontSize:11,color:'var(--gray)'}}>Start Month</label>
+                <select className="select" value={newSched.start_month} onChange={e=>setNewSched({...newSched,start_month:e.target.value})}>
+                  <option value="">—</option>
+                  {MONTHS.map(m=><option key={m} value={m}>{m}</option>)}
+                </select>
+              </div>
+              <div style={{width:100}}>
+                <label style={{fontSize:11,color:'var(--gray)'}}>Year</label>
+                <input className="input-wide" type="number" value={newSched.start_year} onChange={e=>setNewSched({...newSched,start_year:e.target.value})}/>
+              </div>
+            </div>
+            <div style={{display:'flex',gap:8}}>
+              <div style={{flex:1}}>
+                <label style={{fontSize:11,color:'var(--gray)'}}>End Month</label>
+                <select className="select" value={newSched.end_month} onChange={e=>setNewSched({...newSched,end_month:e.target.value})}>
+                  <option value="">—</option>
+                  {MONTHS.map(m=><option key={m} value={m}>{m}</option>)}
+                </select>
+              </div>
+              <div style={{width:100}}>
+                <label style={{fontSize:11,color:'var(--gray)'}}>Year</label>
+                <input className="input-wide" type="number" value={newSched.end_year} onChange={e=>setNewSched({...newSched,end_year:e.target.value})}/>
+              </div>
+            </div>
+            <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,color:'var(--gray)',cursor:'pointer'}}>
+              <input type="checkbox" checked={newSched.repeats_annually} onChange={e=>setNewSched({...newSched,repeats_annually:e.target.checked})}/>
+              Repeats annually
+            </label>
+            <input className="input-wide" placeholder="Notes (optional)" value={newSched.notes} onChange={e=>setNewSched({...newSched,notes:e.target.value})}/>
+            <div style={{display:'flex',gap:8,marginTop:6}}>
+              <button className="btn btn-outline" style={{flex:1}} onClick={()=>setShowScheduleAdd(false)}>Cancel</button>
+              <button className="btn btn-green" style={{flex:1}} onClick={addSchedule} disabled={!newSched.flavor_id||!newSched.start_month||!newSched.end_month}>Add Schedule</button>
+            </div>
           </div>
         </div></div>
       )}
@@ -1307,7 +1803,7 @@ function App() {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const {data: fl} = await db('flavors','select',{filters:{active:true},orderBy:'type'});
+      const {data: fl} = await db('flavors','select',{filters:{status:{in:['live','pre_production']}},orderBy:'type'});
       setFlavors(fl || []);
       const dash = await api('dashboard');
       setDashData(dash);

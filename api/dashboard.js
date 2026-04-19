@@ -293,7 +293,7 @@ module.exports = async (req, res) => {
     const { data: flavors } = await supabase
       .from('flavors')
       .select('*')
-      .eq('active', true)
+      .in('status', ['live', 'pre_production'])
       .order('type')
       .order('name');
 

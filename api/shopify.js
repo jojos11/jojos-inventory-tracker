@@ -247,7 +247,7 @@ module.exports = async (req, res) => {
     : since;
 
   try {
-    const { data: flavors } = await supabase.from('flavors').select('id, name').eq('active', true);
+    const { data: flavors } = await supabase.from('flavors').select('id, name').in('status', ['live','pre_production']);
     const flavorMap = {};
     for (const f of flavors) flavorMap[f.name] = f.id;
 
