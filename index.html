@@ -212,7 +212,7 @@ function LoginScreen({onLogin}) {
 
 // ─── INITIAL SETUP ──────────────────
 // ─── NIGHTLY COUNT TAB (replaces old DoughTab + InitialSetup) ───────────────
-function DoughTab({loc, flavors, dashData, onSaved}) {
+function DoughTab({loc, setLoc, flavors, dashData, onSaved}) {
   const locId = loc === 'petoskey' ? 1 : 2;
   const locName = loc === 'petoskey' ? 'Petoskey' : 'Traverse City';
   const storageKey = `jojo_count_draft_${locId}`;
@@ -346,8 +346,20 @@ function DoughTab({loc, flavors, dashData, onSaved}) {
       setCounts({});
       setNotStocked({});
       setNotes('');
-      setSaveMsg(`✓ Count saved for ${locName}`);
-      setTimeout(()=>setSaveMsg(''), 3000);
+
+      // Check if the other location still needs a count
+      const otherLocId = locId === 1 ? 2 : 1;
+      const otherLocName = locId === 1 ? 'Traverse City' : 'Petoskey';
+      const otherCf = dashData?.countFreshness?.[otherLocId];
+      const otherDone = otherCf && !otherCf.missing && otherCf.hoursAgo !== null && otherCf.hoursAgo < 18;
+
+      if (!otherDone) {
+        setSaveMsg(`✓ ${locName} saved — don't forget ${otherLocName}!`);
+        setTimeout(()=>setSaveMsg(''), 6000);
+      } else {
+        setSaveMsg(`✓ Count saved for ${locName} — both locations complete!`);
+        setTimeout(()=>setSaveMsg(''), 4000);
+      }
       if (onSaved) onSaved();
     } catch(e) {
       setSaveMsg('Error saving: ' + e.message);
@@ -420,12 +432,67 @@ function DoughTab({loc, flavors, dashData, onSaved}) {
   const specialties = flavors.filter(f=>f.type==='specialty');
   const extras = flavors.filter(f=>f.type==='extra');
 
+  const countFreshness = dashData?.countFreshness || {};
+  const fmtHours = (h) => {
+    if (h === null || h === undefined) return 'never';
+    if (h < 1) return 'just now';
+    if (h < 24) return `${h}h ago`;
+    const d = Math.floor(h/24);
+    return `${d}d ${h%24}h ago`;
+  };
+
   return (
     <div>
+      {/* Location switcher — big and unmissable */}
+      <div className="card" style={{padding:'14px 16px',marginBottom:12}}>
+        <div style={{fontSize:11,color:'var(--gray)',textTransform:'uppercase',letterSpacing:'1px',fontWeight:700,marginBottom:10}}>
+          Which location are you counting tonight?
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+          {[
+            {id:1, key:'petoskey', name:'Petoskey'},
+            {id:2, key:'tc', name:'Traverse City'}
+          ].map(location => {
+            const active = loc === location.key;
+            const cf = countFreshness[location.id];
+            const done = cf && !cf.missing && cf.hoursAgo !== null && cf.hoursAgo < 18;
+            return (
+              <button key={location.key}
+                onClick={()=>setLoc(location.key)}
+                style={{
+                  padding:'16px 14px',
+                  borderRadius:10,
+                  border: active ? '2px solid var(--blue)' : '2px solid var(--border)',
+                  background: active ? 'rgba(162,204,235,.08)' : 'var(--bg)',
+                  color:'#fff',
+                  cursor:'pointer',
+                  textAlign:'left',
+                  fontFamily:'inherit',
+                  transition:'all .15s'
+                }}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+                  <span className="serif" style={{fontSize:17,fontWeight:700,color:active?'var(--blue)':'#fff'}}>
+                    {location.name}
+                  </span>
+                  {done
+                    ? <span style={{fontSize:11,color:'var(--green)',fontWeight:700}}>✓ COUNTED</span>
+                    : <span style={{fontSize:11,color:'var(--yellow)',fontWeight:700}}>○ NEEDS COUNT</span>}
+                </div>
+                <div style={{fontSize:11,color:'var(--gray)'}}>
+                  {cf && !cf.missing
+                    ? <>Last count {fmtHours(cf.hoursAgo)}{cf.countedBy ? ` by ${cf.countedBy}` : ''}</>
+                    : 'No count on record'}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       <div className="card">
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6,flexWrap:'wrap',gap:10}}>
           <div>
-            <h3>Nightly Count — {locName}</h3>
+            <h3>Counting {locName}</h3>
             <p className="sub">Count each flavor before close. Draft auto-saves. Tap Save when done.</p>
           </div>
           <div style={{fontSize:12,color:'var(--gray)'}}>
@@ -1271,15 +1338,10 @@ function App() {
         <nav className="nav">
           {tabs.map(t => <button key={t.id} className={tab===t.id?'active':''} onClick={()=>setTab(t.id)}>{t.label}</button>)}
         </nav>
-        {tab==='dough' ? (
-          <div className="loc-toggle">
-            <button className={loc==='petoskey'?'active':''} onClick={()=>setLoc('petoskey')}>Petoskey</button>
-            <button className={loc==='tc'?'active':''} onClick={()=>setLoc('tc')}>Traverse City</button>
-          </div>
-        ) : <div style={{width:160}}/>}
+        <div style={{width:160}}/>
       </header>
       <main>
-        {tab==='dough' && <DoughTab loc={loc} flavors={flavors} dashData={dashData} onSaved={loadData}/>}
+        {tab==='dough' && <DoughTab loc={loc} setLoc={setLoc} flavors={flavors} dashData={dashData} onSaved={loadData}/>}
         {tab==='production' && <ProductionTab dashData={dashData}/>}
         {tab==='prep' && <PrepListTab dashData={dashData}/>}
         {tab==='orders' && <OrdersTab dashData={dashData}/>}
