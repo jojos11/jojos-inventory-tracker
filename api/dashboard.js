@@ -32,15 +32,43 @@ async function calculateVelocity(supabase, flavor, days = 14) {
   const result = { petoskey: 0, tc: 0, total: 0, dataPoints: 0, reliable: false };
 
   for (const locId of [1, 2]) {
-    const { data: snaps } = await supabase
+    // Fetch ALL snapshots (both fridge and freezer) since cutoff
+    const { data: rawSnaps } = await supabase
       .from('inventory_snapshots')
-      .select('actual_bins, created_at')
+      .select('actual_bins, created_at, storage')
       .eq('flavor_id', fId)
       .eq('location_id', locId)
       .gte('created_at', cutoff)
       .order('created_at', { ascending: true });
 
-    if (!snaps || snaps.length < 2) continue;
+    if (!rawSnaps || rawSnaps.length === 0) continue;
+
+    // Group by calendar date — sum fridge + freezer bins for that date
+    // Use the LATEST timestamp on that date as the snapshot time
+    const byDate = {};
+    for (const snap of rawSnaps) {
+      const dateKey = snap.created_at.substring(0, 10); // YYYY-MM-DD
+      if (!byDate[dateKey]) {
+        byDate[dateKey] = { bins: 0, anyNull: false, latestTime: snap.created_at };
+      }
+      if (snap.actual_bins === null) {
+        byDate[dateKey].anyNull = true;
+      } else {
+        byDate[dateKey].bins += Number(snap.actual_bins);
+      }
+      if (snap.created_at > byDate[dateKey].latestTime) {
+        byDate[dateKey].latestTime = snap.created_at;
+      }
+    }
+
+    // Convert to a sorted array
+    const snaps = Object.keys(byDate).sort().map(d => ({
+      actual_bins: byDate[d].anyNull && byDate[d].bins === 0 ? null : byDate[d].bins,
+      created_at: byDate[d].latestTime,
+      isNull: byDate[d].anyNull && byDate[d].bins === 0
+    }));
+
+    if (snaps.length < 2) continue;
 
     let totalSoldBins = 0;
     let totalDays = 0;
@@ -49,8 +77,8 @@ async function calculateVelocity(supabase, flavor, days = 14) {
       const prev = snaps[i - 1];
       const curr = snaps[i];
 
-      // Skip intervals where either count was "not stocked" (null)
-      if (prev.actual_bins === null || curr.actual_bins === null) continue;
+      // Skip intervals where either count was fully "not stocked"
+      if (prev.isNull || curr.isNull) continue;
 
       const prevBins = Number(prev.actual_bins);
       const currBins = Number(curr.actual_bins);
@@ -120,31 +148,43 @@ async function calculateCurrentInventory(supabase, flavor) {
 
   let petBins = 0;
   let tcBins = 0;
+  let petFridge = 0, petFreezer = 0;
+  let tcFridge = 0, tcFreezer = 0;
   let petSnapTime = null;
   let tcSnapTime = null;
 
-  const { data: petSnaps } = await supabase
-    .from('inventory_snapshots')
-    .select('actual_bins, created_at')
-    .eq('flavor_id', fId)
-    .eq('location_id', 1)
-    .not('actual_bins', 'is', null)
-    .order('created_at', { ascending: false })
-    .limit(1);
+  // Helper: fetch latest snapshot for a (location, storage) pair
+  async function getLatestSnapshot(locId, storage) {
+    const { data } = await supabase
+      .from('inventory_snapshots')
+      .select('actual_bins, created_at')
+      .eq('flavor_id', fId)
+      .eq('location_id', locId)
+      .eq('storage', storage)
+      .not('actual_bins', 'is', null)
+      .order('created_at', { ascending: false })
+      .limit(1);
+    return data && data.length > 0 ? data[0] : null;
+  }
 
-  const { data: tcSnaps } = await supabase
-    .from('inventory_snapshots')
-    .select('actual_bins, created_at')
-    .eq('flavor_id', fId)
-    .eq('location_id', 2)
-    .not('actual_bins', 'is', null)
-    .order('created_at', { ascending: false })
-    .limit(1);
+  // Petoskey: fridge + freezer
+  const petFridgeSnap = await getLatestSnapshot(1, 'fridge');
+  const petFreezerSnap = await getLatestSnapshot(1, 'freezer');
+  if (petFridgeSnap) {
+    petFridge = Number(petFridgeSnap.actual_bins);
+    petSnapTime = petFridgeSnap.created_at;
+  }
+  if (petFreezerSnap) {
+    petFreezer = Number(petFreezerSnap.actual_bins);
+    // Use the most recent of either snap as the "snap time" for downstream logic
+    if (!petSnapTime || petFreezerSnap.created_at > petSnapTime) {
+      petSnapTime = petFreezerSnap.created_at;
+    }
+  }
 
-  if (petSnaps && petSnaps.length > 0) {
-    const snap = petSnaps[0];
-    petBins = Number(snap.actual_bins);
-    petSnapTime = snap.created_at;
+  // Apply production + transfers since the latest Petoskey snap
+  if (petSnapTime) {
+    petBins = petFridge + petFreezer;
 
     if (batchSize > 0) {
       const { data: prod } = await supabase
@@ -172,18 +212,22 @@ async function calculateCurrentInventory(supabase, flavor) {
     if (tIn) for (const t of tIn) petBins += Number(t.bins);
   }
 
-  if (tcSnaps && tcSnaps.length > 0) {
-    const snap = tcSnaps[0];
-    tcBins = Number(snap.actual_bins);
-    tcSnapTime = snap.created_at;
+  // Traverse City: fridge + freezer
+  const tcFridgeSnap = await getLatestSnapshot(2, 'fridge');
+  const tcFreezerSnap = await getLatestSnapshot(2, 'freezer');
+  if (tcFridgeSnap) {
+    tcFridge = Number(tcFridgeSnap.actual_bins);
+    tcSnapTime = tcFridgeSnap.created_at;
+  }
+  if (tcFreezerSnap) {
+    tcFreezer = Number(tcFreezerSnap.actual_bins);
+    if (!tcSnapTime || tcFreezerSnap.created_at > tcSnapTime) {
+      tcSnapTime = tcFreezerSnap.created_at;
+    }
+  }
 
-    const { data: tIn } = await supabase
-      .from('transfers')
-      .select('bins')
-      .eq('flavor_id', fId)
-      .eq('to_location_id', 2)
-      .gt('created_at', tcSnapTime);
-    if (tIn) for (const t of tIn) tcBins += Number(t.bins);
+  if (tcSnapTime) {
+    tcBins = tcFridge + tcFreezer;
 
     const { data: tOut } = await supabase
       .from('transfers')
@@ -192,6 +236,14 @@ async function calculateCurrentInventory(supabase, flavor) {
       .eq('from_location_id', 2)
       .gt('created_at', tcSnapTime);
     if (tOut) for (const t of tOut) tcBins -= Number(t.bins);
+
+    const { data: tIn } = await supabase
+      .from('transfers')
+      .select('bins')
+      .eq('flavor_id', fId)
+      .eq('to_location_id', 2)
+      .gt('created_at', tcSnapTime);
+    if (tIn) for (const t of tIn) tcBins += Number(t.bins);
   }
 
   petBins = Math.max(0, petBins);
@@ -201,6 +253,10 @@ async function calculateCurrentInventory(supabase, flavor) {
     petoskey: round4(petBins),
     tc: round4(tcBins),
     total: round4(petBins + tcBins),
+    petFridge: round4(petFridge),
+    petFreezer: round4(petFreezer),
+    tcFridge: round4(tcFridge),
+    tcFreezer: round4(tcFreezer),
     petSnapTime,
     tcSnapTime
   };
@@ -330,6 +386,10 @@ module.exports = async (req, res) => {
         petoskey: inv.petoskey,
         tc: inv.tc,
         total: inv.total,
+        petFridge: inv.petFridge,
+        petFreezer: inv.petFreezer,
+        tcFridge: inv.tcFridge,
+        tcFreezer: inv.tcFreezer,
         petSnapTime: inv.petSnapTime,
         tcSnapTime: inv.tcSnapTime
       });
@@ -395,6 +455,10 @@ module.exports = async (req, res) => {
         current: invItem.total,
         petoskey: invItem.petoskey,
         tc: invItem.tc,
+        petFridge: invItem.petFridge,
+        petFreezer: invItem.petFreezer,
+        tcFridge: invItem.tcFridge,
+        tcFreezer: invItem.tcFreezer,
         velocity: vel.total,
         velocityReliable: vel.reliable,
         projectedSales,

@@ -62,7 +62,9 @@ module.exports = async (req, res) => {
         break;
       }
       case 'upsert': {
-        query = supabase.from(table).upsert(data).select();
+        const onConflict = req.body.onConflict;
+        const upsertOpts = onConflict ? { onConflict } : {};
+        query = supabase.from(table).upsert(data, upsertOpts).select();
         break;
       }
       case 'delete': {

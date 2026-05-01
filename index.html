@@ -221,7 +221,8 @@ function DoughTab({loc, setLoc, flavors, dashData, onSaved}) {
 
   const [employees, setEmployees] = useState([]);
   const [countedBy, setCountedBy] = useState('');
-  const [counts, setCounts] = useState({});       // {flavorId: '0.5' or number}
+  // counts now stores {flavorId: {fridge: '0.5', freezer: '2'}}
+  const [counts, setCounts] = useState({});
   const [notStocked, setNotStocked] = useState({}); // {flavorId: true}
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
@@ -229,7 +230,8 @@ function DoughTab({loc, setLoc, flavors, dashData, onSaved}) {
   const [saveMsg, setSaveMsg] = useState('');
 
   // Previous counts (for reference + variance detection)
-  const [prevCounts, setPrevCounts] = useState({}); // {flavorId: number}
+  // prevCounts now stores {flavorId: {fridge, freezer, total}}
+  const [prevCounts, setPrevCounts] = useState({});
 
   // Load employees + previous night's counts + any local draft on mount / loc change
   useEffect(() => {
@@ -237,16 +239,31 @@ function DoughTab({loc, setLoc, flavors, dashData, onSaved}) {
       const {data: emps} = await db('employees','select',{filters:{active:true},orderBy:'name'});
       setEmployees(emps || []);
 
-      // Get previous (most recent) count per flavor at this location
+      // Get previous (most recent) count per flavor at this location, both fridge and freezer
       const prev = {};
       for (const f of liveFlavors) {
-        const {data} = await db('inventory_snapshots','select',{
-          filters:{flavor_id:f.id,location_id:locId},
+        // Fridge
+        const {data: fridgeData} = await db('inventory_snapshots','select',{
+          filters:{flavor_id:f.id, location_id:locId, storage:'fridge'},
           orderBy:'created_at:desc',
           limit:1
         });
-        if (data && data.length > 0 && data[0].actual_bins !== null) {
-          prev[f.id] = Number(data[0].actual_bins);
+        // Freezer
+        const {data: freezerData} = await db('inventory_snapshots','select',{
+          filters:{flavor_id:f.id, location_id:locId, storage:'freezer'},
+          orderBy:'created_at:desc',
+          limit:1
+        });
+        const fridgeBins = fridgeData && fridgeData.length > 0 && fridgeData[0].actual_bins !== null
+          ? Number(fridgeData[0].actual_bins) : null;
+        const freezerBins = freezerData && freezerData.length > 0 && freezerData[0].actual_bins !== null
+          ? Number(freezerData[0].actual_bins) : null;
+        if (fridgeBins !== null || freezerBins !== null) {
+          prev[f.id] = {
+            fridge: fridgeBins,
+            freezer: freezerBins,
+            total: (fridgeBins || 0) + (freezerBins || 0)
+          };
         }
       }
       setPrevCounts(prev);
@@ -281,8 +298,12 @@ function DoughTab({loc, setLoc, flavors, dashData, onSaved}) {
     } catch(e) { /* quota or disabled */ }
   }, [counts, notStocked, countedBy, notes, storageKey]);
 
-  const setCount = (fId, val) => {
-    setCounts(c => ({...c, [fId]: val}));
+  // Set count for a specific storage (fridge or freezer)
+  const setCount = (fId, storage, val) => {
+    setCounts(c => ({
+      ...c,
+      [fId]: { ...(c[fId] || {}), [storage]: val }
+    }));
     setNotStocked(ns => {
       if (ns[fId]) { const next = {...ns}; delete next[fId]; return next; }
       return ns;
@@ -299,25 +320,43 @@ function DoughTab({loc, setLoc, flavors, dashData, onSaved}) {
     setCounts(c => { const n = {...c}; delete n[fId]; return n; });
   };
 
-  // Variance check for one flavor: flag if >2x or <0.5x previous, and value is nonzero
-  const hasVariance = (fId, val) => {
+  // Get total bins entered for a flavor (fridge + freezer)
+  const getFlavorTotal = (fId) => {
+    const c = counts[fId];
+    if (!c) return null;
+    const fridge = c.fridge !== undefined && c.fridge !== '' ? parseFloat(c.fridge) : null;
+    const freezer = c.freezer !== undefined && c.freezer !== '' ? parseFloat(c.freezer) : null;
+    if (fridge === null && freezer === null) return null;
+    return (fridge || 0) + (freezer || 0);
+  };
+
+  // A flavor is "complete" if Not Stocked OR both fridge AND freezer are filled in
+  const isFlavorComplete = (fId) => {
+    if (notStocked[fId]) return true;
+    const c = counts[fId];
+    if (!c) return false;
+    const hasFridge = c.fridge !== undefined && c.fridge !== '';
+    const hasFreezer = c.freezer !== undefined && c.freezer !== '';
+    return hasFridge && hasFreezer;
+  };
+
+  // Variance check uses TOTAL bins vs previous TOTAL
+  const hasVariance = (fId) => {
     const prev = prevCounts[fId];
-    if (prev === undefined || prev === null) return false;
-    const num = parseFloat(val);
-    if (isNaN(num)) return false;
-    if (prev === 0 && num > 3) return true; // big jump from zero
-    if (prev > 0) {
-      if (num > prev * 2.5) return true;
-      if (num < prev * 0.3 && prev > 1) return true;
+    if (!prev || prev.total === undefined) return false;
+    const total = getFlavorTotal(fId);
+    if (total === null) return false;
+    if (prev.total === 0 && total > 3) return true; // big jump from zero
+    if (prev.total > 0) {
+      if (total > prev.total * 2.5) return true;
+      if (total < prev.total * 0.3 && prev.total > 1) return true;
     }
     return false;
   };
 
   // Completion status for save button
   const totalFlavors = liveFlavors.length;
-  const completedFlavors = liveFlavors.filter(f =>
-    notStocked[f.id] || (counts[f.id] !== undefined && counts[f.id] !== '')
-  ).length;
+  const completedFlavors = liveFlavors.filter(f => isFlavorComplete(f.id)).length;
   const ready = countedBy && completedFlavors === totalFlavors;
 
   const doSave = async () => {
@@ -328,19 +367,49 @@ function DoughTab({loc, setLoc, flavors, dashData, onSaved}) {
     try {
       for (const f of liveFlavors) {
         const isNotStocked = !!notStocked[f.id];
-        const raw = counts[f.id];
-        const val = isNotStocked ? null : (raw === '' || raw === undefined ? null : parseFloat(raw));
+        const c = counts[f.id] || {};
 
-        // Upsert by flavor+loc+date — last save for the day wins
-        await db('inventory_snapshots','upsert',{data:{
-          flavor_id: f.id,
-          location_id: locId,
-          date: today,
-          actual_bins: val,
-          calculated_bins: val,
-          counted_by: countedBy,
-          notes: notes || null
-        }});
+        // Get fridge value
+        const fridgeRaw = c.fridge;
+        const fridgeVal = isNotStocked
+          ? null
+          : (fridgeRaw === '' || fridgeRaw === undefined ? null : parseFloat(fridgeRaw));
+
+        // Get freezer value
+        const freezerRaw = c.freezer;
+        const freezerVal = isNotStocked
+          ? null
+          : (freezerRaw === '' || freezerRaw === undefined ? null : parseFloat(freezerRaw));
+
+        // Save fridge row
+        await db('inventory_snapshots','upsert',{
+          onConflict: 'flavor_id,location_id,date,storage',
+          data:{
+            flavor_id: f.id,
+            location_id: locId,
+            date: today,
+            storage: 'fridge',
+            actual_bins: fridgeVal,
+            calculated_bins: fridgeVal,
+            counted_by: countedBy,
+            notes: notes || null
+          }
+        });
+
+        // Save freezer row
+        await db('inventory_snapshots','upsert',{
+          onConflict: 'flavor_id,location_id,date,storage',
+          data:{
+            flavor_id: f.id,
+            location_id: locId,
+            date: today,
+            storage: 'freezer',
+            actual_bins: freezerVal,
+            calculated_bins: freezerVal,
+            counted_by: countedBy,
+            notes: notes || null
+          }
+        });
       }
 
       // Clear draft
@@ -370,10 +439,10 @@ function DoughTab({loc, setLoc, flavors, dashData, onSaved}) {
   };
 
   const handleSaveClick = () => {
-    // Check for any unconfirmed variances
+    // Check for any unconfirmed variances (uses TOTAL, not per-storage)
     const variant = liveFlavors.find(f => {
       if (notStocked[f.id]) return false;
-      return hasVariance(f.id, counts[f.id]);
+      return hasVariance(f.id);
     });
     if (variant) {
       setConfirmFlavor(variant);
@@ -383,47 +452,79 @@ function DoughTab({loc, setLoc, flavors, dashData, onSaved}) {
   };
 
   const renderFlavorRow = (f) => {
-    const curVal = counts[f.id] !== undefined ? String(counts[f.id]) : '';
+    const c = counts[f.id] || {};
+    const fridgeVal = c.fridge !== undefined ? String(c.fridge) : '';
+    const freezerVal = c.freezer !== undefined ? String(c.freezer) : '';
     const isNS = !!notStocked[f.id];
     const prev = prevCounts[f.id];
     const presets = ['0','0.25','0.5','0.75','1','2','3','4','5'];
-    const showCustom = curVal !== '' && !presets.includes(curVal);
-    const counted = isNS || curVal !== '';
-    const variance = hasVariance(f.id, curVal);
+    const counted = isFlavorComplete(f.id);
+    const variance = hasVariance(f.id);
+    const total = getFlavorTotal(f.id);
 
-    return (
-      <div key={f.id} className={`count-row ${counted ? 'counted' : ''} ${isNS ? 'not-stocked' : ''}`}>
-        <div className="flav-name">
-          {f.name}
-          {prev !== undefined && <span className="prev-count">last: {prev}</span>}
-          {variance && <span className="variance-warn">⚠ variance</span>}
-        </div>
+    // Helper to render a single preset bank for fridge or freezer
+    const presetBank = (storage, value) => {
+      const showCustom = value !== '' && !presets.includes(value);
+      return (
         <div className="quick-btns">
           {presets.map(p => (
             <button key={p}
-              className={`quick-btn ${curVal===p && !isNS ? 'active' : ''}`}
-              onClick={()=>setCount(f.id, p)}>
-              {p === '0.25' ? '¼' : p === '0.5' ? '½' : p === '0.75' ? '¾' : p === '5' ? '5' : p}
+              className={`quick-btn ${value===p && !isNS ? 'active' : ''}`}
+              onClick={()=>setCount(f.id, storage, p)}>
+              {p === '0.25' ? '¼' : p === '0.5' ? '½' : p === '0.75' ? '¾' : p}
             </button>
           ))}
           {showCustom ? (
             <input
               className="custom-input"
               type="number" step="0.25" min="0"
-              value={curVal}
-              onChange={e=>setCount(f.id, e.target.value)}
-              onBlur={e=>{ if (e.target.value === '') setCounts(c=>{const n={...c};delete n[f.id];return n;}); }}
+              value={value}
+              onChange={e=>setCount(f.id, storage, e.target.value)}
+              onBlur={e=>{ if (e.target.value === '') setCounts(c=>{ const n={...c}; const fc={...(n[f.id]||{})}; delete fc[storage]; n[f.id]=fc; return n; }); }}
             />
           ) : (
             <button className="quick-btn custom" onClick={()=>{
-              const v = prompt(`Enter count for ${f.name} (bins, supports decimals like 1.5):`, prev !== undefined ? String(prev) : '');
-              if (v !== null && v !== '') setCount(f.id, v);
+              const prevForStorage = prev ? prev[storage] : undefined;
+              const v = prompt(`${storage === 'fridge' ? 'Fridge' : 'Freezer'} count for ${f.name} (bins, decimals OK):`, prevForStorage != null ? String(prevForStorage) : '');
+              if (v !== null && v !== '') setCount(f.id, storage, v);
             }}>custom</button>
           )}
+        </div>
+      );
+    };
+
+    return (
+      <div key={f.id} className={`count-row ${counted ? 'counted' : ''} ${isNS ? 'not-stocked' : ''}`}>
+        <div className="flav-name">
+          {f.name}
+          {prev && prev.total !== undefined && (
+            <span className="prev-count">last: {prev.total} ({prev.fridge ?? 0}f + {prev.freezer ?? 0}fz)</span>
+          )}
+          {total !== null && !isNS && (
+            <span className="prev-count" style={{color:'var(--green)',fontWeight:600}}>= {total} total</span>
+          )}
+          {variance && <span className="variance-warn">⚠ variance</span>}
+        </div>
+
+        {!isNS && (
+          <>
+            <div style={{display:'flex',alignItems:'center',gap:8,marginTop:6,flexWrap:'wrap'}}>
+              <span style={{fontSize:11,color:'var(--gray)',minWidth:60,fontWeight:600,textTransform:'uppercase',letterSpacing:'.6px'}}>❄ Fridge</span>
+              {presetBank('fridge', fridgeVal)}
+            </div>
+            <div style={{display:'flex',alignItems:'center',gap:8,marginTop:6,flexWrap:'wrap'}}>
+              <span style={{fontSize:11,color:'var(--gray)',minWidth:60,fontWeight:600,textTransform:'uppercase',letterSpacing:'.6px'}}>🧊 Freezer</span>
+              {presetBank('freezer', freezerVal)}
+            </div>
+          </>
+        )}
+
+        <div style={{marginTop:isNS ? 0 : 8}}>
           <button
             className={`quick-btn not-stocked ${isNS ? 'active' : ''}`}
+            style={{width:'100%'}}
             onClick={()=>toggleNotStocked(f.id)}>
-            {isNS ? '✓ Not stocked' : 'Not stocked'}
+            {isNS ? '✓ Not stocked at this location' : 'Not stocked at this location'}
           </button>
         </div>
       </div>
@@ -554,22 +655,27 @@ function DoughTab({loc, setLoc, flavors, dashData, onSaved}) {
       </div>
 
       {/* Variance confirm modal */}
-      {confirmFlavor && (
-        <div className="modal-overlay" onClick={()=>setConfirmFlavor(null)}>
-          <div className="confirm-modal" onClick={e=>e.stopPropagation()}>
-            <h3 style={{fontFamily:"'Playfair Display',serif",fontSize:16,color:'var(--yellow)',marginBottom:10}}>⚠ Double-check this count</h3>
-            <p style={{fontSize:13,lineHeight:1.5,marginBottom:14}}>
-              <strong>{confirmFlavor.name}</strong>: you entered <strong>{counts[confirmFlavor.id]}</strong> bins.<br/>
-              Last count was <strong>{prevCounts[confirmFlavor.id]}</strong> bins.<br/>
-              <span style={{color:'var(--gray)'}}>That's a big change. Make sure the number is right.</span>
-            </p>
-            <div style={{display:'flex',gap:10}}>
-              <button className="btn btn-outline" style={{flex:1}} onClick={()=>setConfirmFlavor(null)}>Go back & fix</button>
-              <button className="btn btn-blue" style={{flex:1}} onClick={()=>{setConfirmFlavor(null);doSave();}}>Yes, that's right</button>
+      {confirmFlavor && (() => {
+        const cf = counts[confirmFlavor.id] || {};
+        const total = getFlavorTotal(confirmFlavor.id);
+        const prev = prevCounts[confirmFlavor.id];
+        return (
+          <div className="modal-overlay" onClick={()=>setConfirmFlavor(null)}>
+            <div className="confirm-modal" onClick={e=>e.stopPropagation()}>
+              <h3 style={{fontFamily:"'Playfair Display',serif",fontSize:16,color:'var(--yellow)',marginBottom:10}}>⚠ Double-check this count</h3>
+              <p style={{fontSize:13,lineHeight:1.5,marginBottom:14}}>
+                <strong>{confirmFlavor.name}</strong>: you entered <strong>{cf.fridge ?? 0} fridge + {cf.freezer ?? 0} freezer = {total} total</strong> bins.<br/>
+                Last count was <strong>{prev?.total ?? 0} total</strong> ({prev?.fridge ?? 0} fridge + {prev?.freezer ?? 0} freezer).<br/>
+                <span style={{color:'var(--gray)'}}>That's a big change. Make sure the number is right.</span>
+              </p>
+              <div style={{display:'flex',gap:10}}>
+                <button className="btn btn-outline" style={{flex:1}} onClick={()=>setConfirmFlavor(null)}>Go back & fix</button>
+                <button className="btn btn-blue" style={{flex:1}} onClick={()=>{setConfirmFlavor(null);doSave();}}>Yes, that's right</button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
@@ -697,7 +803,10 @@ function ProductionTab({dashData}) {
                   {!p.velocityReliable && <Tag color="var(--gray)">LIMITED DATA</Tag>}
                 </td>
                 <td className="c" style={{fontWeight:600}}>{p.current}
-                  <div style={{fontSize:10,color:'var(--gray)',fontWeight:400}}>P:{p.petoskey} TC:{p.tc}</div>
+                  <div style={{fontSize:10,color:'var(--gray)',fontWeight:400}}>
+                    P:{p.petoskey} <span style={{opacity:.7}}>({p.petFridge ?? 0}f+{p.petFreezer ?? 0}fz)</span>
+                    {' '}TC:{p.tc} <span style={{opacity:.7}}>({p.tcFridge ?? 0}f+{p.tcFreezer ?? 0}fz)</span>
+                  </div>
                 </td>
                 <td className="c" style={{color:'var(--gray)'}}>{p.velocity}</td>
                 <td className="c" style={{color:'var(--gray)'}}>{p.totalDemand}</td>
