@@ -211,19 +211,23 @@ function LoginScreen({onLogin}) {
 }
 
 // ─── NIGHTLY COUNT TAB (replaces old DoughTab + InitialSetup) ───────────────
-function DoughTab({loc, setLoc, flavors, dashData, onSaved}) {
+function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
   const locId = loc === 'petoskey' ? 1 : 2;
   const locName = loc === 'petoskey' ? 'Petoskey' : 'Traverse City';
   const storageKey = `jojo_count_draft_${locId}`;
 
   // Nightly count only operates on LIVE flavors — pre_production flavors have no bins yet
   const liveFlavors = flavors.filter(f => f.status === 'live' || !f.status);
+  const liveProducts = (products || []).filter(p => p.status === 'live' || !p.status);
 
   const [employees, setEmployees] = useState([]);
   const [countedBy, setCountedBy] = useState('');
   // counts now stores {flavorId: {fridge: '0.5', freezer: '2'}}
   const [counts, setCounts] = useState({});
   const [notStocked, setNotStocked] = useState({}); // {flavorId: true}
+  // productCounts: {productId: '12'} — single number per product
+  const [productCounts, setProductCounts] = useState({});
+  const [productNotStocked, setProductNotStocked] = useState({}); // {productId: true}
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
   const [confirmFlavor, setConfirmFlavor] = useState(null); // variance confirm
@@ -232,6 +236,7 @@ function DoughTab({loc, setLoc, flavors, dashData, onSaved}) {
   // Previous counts (for reference + variance detection)
   // prevCounts now stores {flavorId: {fridge, freezer, total}}
   const [prevCounts, setPrevCounts] = useState({});
+  const [prevProductCounts, setPrevProductCounts] = useState({}); // {productId: number}
 
   // Load employees + previous night's counts + any local draft on mount / loc change
   useEffect(() => {
@@ -268,6 +273,20 @@ function DoughTab({loc, setLoc, flavors, dashData, onSaved}) {
       }
       setPrevCounts(prev);
 
+      // Get previous count per product at this location
+      const prevProd = {};
+      for (const p of liveProducts) {
+        const {data} = await db('product_snapshots','select',{
+          filters:{product_id:p.id, location_id:locId},
+          orderBy:'created_at:desc',
+          limit:1
+        });
+        if (data && data.length > 0 && data[0].quantity !== null) {
+          prevProd[p.id] = Number(data[0].quantity);
+        }
+      }
+      setPrevProductCounts(prevProd);
+
       // Restore local draft if present (survives refresh/sleep)
       try {
         const raw = localStorage.getItem(storageKey);
@@ -278,6 +297,8 @@ function DoughTab({loc, setLoc, flavors, dashData, onSaved}) {
           if (ageMs < 18 * 3600000) {
             if (draft.counts) setCounts(draft.counts);
             if (draft.notStocked) setNotStocked(draft.notStocked);
+            if (draft.productCounts) setProductCounts(draft.productCounts);
+            if (draft.productNotStocked) setProductNotStocked(draft.productNotStocked);
             if (draft.countedBy) setCountedBy(draft.countedBy);
             if (draft.notes) setNotes(draft.notes);
           } else {
@@ -286,17 +307,19 @@ function DoughTab({loc, setLoc, flavors, dashData, onSaved}) {
         }
       } catch(e) { /* ignore parse errors */ }
     })();
-  }, [locId, flavors]);
+  }, [locId, flavors, products]);
 
   // Persist draft whenever it changes
   useEffect(() => {
-    if (Object.keys(counts).length === 0 && Object.keys(notStocked).length === 0 && !countedBy && !notes) return;
+    if (Object.keys(counts).length === 0 && Object.keys(notStocked).length === 0 &&
+        Object.keys(productCounts).length === 0 && Object.keys(productNotStocked).length === 0 &&
+        !countedBy && !notes) return;
     try {
       localStorage.setItem(storageKey, JSON.stringify({
-        counts, notStocked, countedBy, notes, savedAt: Date.now()
+        counts, notStocked, productCounts, productNotStocked, countedBy, notes, savedAt: Date.now()
       }));
     } catch(e) { /* quota or disabled */ }
-  }, [counts, notStocked, countedBy, notes, storageKey]);
+  }, [counts, notStocked, productCounts, productNotStocked, countedBy, notes, storageKey]);
 
   // Set count for a specific storage (fridge or freezer)
   const setCount = (fId, storage, val) => {
@@ -354,10 +377,39 @@ function DoughTab({loc, setLoc, flavors, dashData, onSaved}) {
     return false;
   };
 
-  // Completion status for save button
+  // Product completion + helpers
+  const isProductComplete = (pId) => {
+    if (productNotStocked[pId]) return true;
+    const v = productCounts[pId];
+    return v !== undefined && v !== '';
+  };
+
+  const setProductCount = (pId, val) => {
+    setProductCounts(c => ({...c, [pId]: val}));
+    setProductNotStocked(ns => {
+      if (ns[pId]) { const next = {...ns}; delete next[pId]; return next; }
+      return ns;
+    });
+  };
+
+  const toggleProductNotStocked = (pId) => {
+    setProductNotStocked(ns => {
+      const next = {...ns};
+      if (next[pId]) delete next[pId];
+      else next[pId] = true;
+      return next;
+    });
+    setProductCounts(c => { const n = {...c}; delete n[pId]; return n; });
+  };
+
+  // Completion status for save button — must complete BOTH cookies and products
   const totalFlavors = liveFlavors.length;
   const completedFlavors = liveFlavors.filter(f => isFlavorComplete(f.id)).length;
-  const ready = countedBy && completedFlavors === totalFlavors;
+  const totalProducts = liveProducts.length;
+  const completedProducts = liveProducts.filter(p => isProductComplete(p.id)).length;
+  const totalItems = totalFlavors + totalProducts;
+  const completedItems = completedFlavors + completedProducts;
+  const ready = countedBy && completedItems === totalItems;
 
   const doSave = async () => {
     setSaving(true);
@@ -365,6 +417,7 @@ function DoughTab({loc, setLoc, flavors, dashData, onSaved}) {
     const today = new Date().toISOString().split('T')[0];
 
     try {
+      // Save cookie flavor counts (fridge + freezer per flavor)
       for (const f of liveFlavors) {
         const isNotStocked = !!notStocked[f.id];
         const c = counts[f.id] || {};
@@ -412,10 +465,31 @@ function DoughTab({loc, setLoc, flavors, dashData, onSaved}) {
         });
       }
 
+      // Save product counts (one row per product per location per date)
+      for (const p of liveProducts) {
+        const isNS = !!productNotStocked[p.id];
+        const raw = productCounts[p.id];
+        const qty = isNS ? null : (raw === '' || raw === undefined ? null : parseFloat(raw));
+
+        await db('product_snapshots','upsert',{
+          onConflict: 'product_id,location_id,date',
+          data:{
+            product_id: p.id,
+            location_id: locId,
+            date: today,
+            quantity: qty,
+            counted_by: countedBy,
+            notes: notes || null
+          }
+        });
+      }
+
       // Clear draft
       localStorage.removeItem(storageKey);
       setCounts({});
       setNotStocked({});
+      setProductCounts({});
+      setProductNotStocked({});
       setNotes('');
 
       // Check if the other location still needs a count
@@ -600,7 +674,7 @@ function DoughTab({loc, setLoc, flavors, dashData, onSaved}) {
             <p className="sub">Count each flavor before close. Draft auto-saves. Tap Save when done.</p>
           </div>
           <div style={{fontSize:12,color:'var(--gray)'}}>
-            {completedFlavors} of {totalFlavors} counted
+            {completedItems} of {totalItems} counted
           </div>
         </div>
 
@@ -633,6 +707,67 @@ function DoughTab({loc, setLoc, flavors, dashData, onSaved}) {
         <div>{extras.map(renderFlavorRow)}</div>
       </div>}
 
+      {/* Product sections */}
+      {(() => {
+        const renderProductRow = (p) => {
+          const val = productCounts[p.id] !== undefined ? String(productCounts[p.id]) : '';
+          const isNS = !!productNotStocked[p.id];
+          const prev = prevProductCounts[p.id];
+          const counted = isProductComplete(p.id);
+          return (
+            <div key={p.id} className={`count-row ${counted ? 'counted' : ''} ${isNS ? 'not-stocked' : ''}`}>
+              <div className="flav-name">
+                {p.name}
+                {prev !== undefined && <span className="prev-count">last: {prev}</span>}
+              </div>
+              {!isNS && (
+                <div style={{display:'flex',alignItems:'center',gap:8,marginTop:6,flexWrap:'wrap',width:'100%'}}>
+                  <input
+                    className="input-wide"
+                    style={{maxWidth:140}}
+                    type="number" min="0" step="1"
+                    placeholder={`# of ${p.unit_name}s`}
+                    value={val}
+                    onChange={e=>setProductCount(p.id, e.target.value)}
+                  />
+                  <span style={{fontSize:11,color:'var(--gray)'}}>{p.unit_name}{val==='1'?'':'s'}</span>
+                </div>
+              )}
+              <div style={{marginTop:isNS ? 0 : 8,width:'100%'}}>
+                <button
+                  className={`quick-btn not-stocked ${isNS ? 'active' : ''}`}
+                  style={{width:'100%'}}
+                  onClick={()=>toggleProductNotStocked(p.id)}>
+                  {isNS ? '✓ Not stocked at this location' : 'Not stocked at this location'}
+                </button>
+              </div>
+            </div>
+          );
+        };
+        const cookieDough = liveProducts.filter(p => p.product_type === 'cookie_dough');
+        const sandwiches = liveProducts.filter(p => p.product_type === 'ice_cream_sandwich');
+        const buttercreamBags = liveProducts.filter(p => p.product_type === 'buttercream_bag');
+        return (
+          <>
+            {cookieDough.length > 0 && <div className="card">
+              <h3 style={{color:'var(--blue)',marginBottom:4}}>🍪 Cookie Dough Containers</h3>
+              <p className="sub">Count containers per flavor. 7oz each.</p>
+              <div>{cookieDough.map(renderProductRow)}</div>
+            </div>}
+            {sandwiches.length > 0 && <div className="card">
+              <h3 style={{color:'var(--orange)',marginBottom:4}}>🥪 Ice Cream Sandwiches</h3>
+              <p className="sub">Total assembled sandwiches at this location.</p>
+              <div>{sandwiches.map(renderProductRow)}</div>
+            </div>}
+            {buttercreamBags.length > 0 && <div className="card">
+              <h3 style={{color:'var(--green)',marginBottom:4}}>🧁 Buttercream Bags</h3>
+              <p className="sub">Total bags ready for sale.</p>
+              <div>{buttercreamBags.map(renderProductRow)}</div>
+            </div>}
+          </>
+        );
+      })()}
+
       <div className="card">
         <input className="input-wide" placeholder="Notes (optional — spilled bin, found extras, etc.)"
           value={notes} onChange={e=>setNotes(e.target.value)}/>
@@ -640,7 +775,7 @@ function DoughTab({loc, setLoc, flavors, dashData, onSaved}) {
           <button className="btn btn-outline"
             onClick={()=>{
               if (confirm('Clear all entries for this count?')) {
-                setCounts({}); setNotStocked({}); setNotes('');
+                setCounts({}); setNotStocked({}); setProductCounts({}); setProductNotStocked({}); setNotes('');
                 localStorage.removeItem(storageKey);
               }
             }}>Clear</button>
@@ -648,7 +783,7 @@ function DoughTab({loc, setLoc, flavors, dashData, onSaved}) {
             onClick={handleSaveClick}
             disabled={!ready || saving}
             style={{padding:'10px 24px',fontSize:14,flex:1,maxWidth:300}}>
-            {saving ? 'Saving…' : ready ? `✓ Save Count for ${locName}` : countedBy ? `Count all flavors (${totalFlavors - completedFlavors} left)` : 'Select employee & count all flavors'}
+            {saving ? 'Saving…' : ready ? `✓ Save Count for ${locName}` : countedBy ? `Count all items (${totalItems - completedItems} left)` : 'Select employee & count all items'}
           </button>
           {saveMsg && <span style={{color: saveMsg.startsWith('✓') ? 'var(--green)' : 'var(--red)',fontSize:13,fontWeight:600}}>{saveMsg}</span>}
         </div>
@@ -1062,34 +1197,163 @@ function ManualOrdersTab({flavors}) {
 }
 
 // ─── LOG PRODUCTION ─────────────────
-function LogProductionTab({flavors}) {
+function LogProductionTab({flavors, products}) {
+  const [mode, setMode] = useState('cookies'); // 'cookies' | 'dough'
   const [logs, setLogs] = useState([]);
+  const [doughLogs, setDoughLogs] = useState([]);
   const [flavor, setFlavor] = useState('');
   const [batches, setBatches] = useState('1');
   const [note, setNote] = useState('');
-  const load = () => db('production_logs','select',{orderBy:'date:desc',limit:20}).then(d=>setLogs(d.data||[]));
+
+  // Cookie dough state
+  const [doughProduct, setDoughProduct] = useState('');
+  const [doughFraction, setDoughFraction] = useState('half'); // 'half' | 'quarter'
+  const [doughLoc, setDoughLoc] = useState('1');
+  const [doughNote, setDoughNote] = useState('');
+  const [yieldPreview, setYieldPreview] = useState(null);
+  const [savingDough, setSavingDough] = useState(false);
+  const [doughMsg, setDoughMsg] = useState('');
+
+  const cookieDoughProducts = (products || []).filter(p => p.product_type === 'cookie_dough' && p.status === 'live');
+
+  const load = () => {
+    db('production_logs','select',{orderBy:'date:desc',limit:20}).then(d=>setLogs(d.data||[]));
+    db('product_production_logs','select',{orderBy:'date:desc',limit:20}).then(d=>setDoughLogs(d.data||[]));
+  };
   useEffect(() => { load(); }, []);
+
   const logProd = async () => {
     if (!flavor) return;
     await db('production_logs','insert',{data:{flavor_id:parseInt(flavor), batches:parseFloat(batches), date:new Date().toISOString().split('T')[0], location_id:1, logged_by:'manager', notes:note}});
     setFlavor(''); setBatches('1'); setNote(''); load();
   };
+
+  // Calculate yield for selected cookie dough + fraction
+  useEffect(() => {
+    (async () => {
+      if (!doughProduct) { setYieldPreview(null); return; }
+      const p = cookieDoughProducts.find(x => x.id === parseInt(doughProduct));
+      if (!p || !p.grams_per_unit) { setYieldPreview(null); return; }
+      // Sum half_batch_grams from product_ingredients
+      const {data: ings} = await db('product_ingredients','select',{filters:{product_id:p.id}});
+      const halfTotal = (ings || []).reduce((s, i) => s + Number(i.half_batch_grams), 0);
+      const totalGrams = doughFraction === 'half' ? halfTotal : halfTotal / 2;
+      const containers = Math.floor(totalGrams / p.grams_per_unit);
+      setYieldPreview({ totalGrams, containers });
+    })();
+  }, [doughProduct, doughFraction]);
+
+  const logDough = async () => {
+    if (!doughProduct || !yieldPreview) return;
+    setSavingDough(true);
+    setDoughMsg('');
+    try {
+      await db('product_production_logs','insert',{data:{
+        product_id: parseInt(doughProduct),
+        date: new Date().toISOString().split('T')[0],
+        batch_fraction: doughFraction,
+        quantity_made: yieldPreview.containers,
+        location_id: parseInt(doughLoc),
+        logged_by: 'manager',
+        notes: doughNote || null
+      }});
+      setDoughMsg(`✓ Logged ${yieldPreview.containers} containers`);
+      setTimeout(()=>setDoughMsg(''), 4000);
+      setDoughProduct(''); setDoughNote(''); setYieldPreview(null);
+      load();
+    } catch(e) {
+      setDoughMsg('Error: ' + e.message);
+    }
+    setSavingDough(false);
+  };
+
   return (
     <div>
-      <div className="card"><h3>Log Dough Production</h3><p className="sub">Record dough batches made. All production at Petoskey.</p>
-        <div style={{display:'flex',gap:8,marginTop:12,flexWrap:'wrap'}}>
-          <select className="select" style={{flex:2}} value={flavor} onChange={e=>setFlavor(e.target.value)}><option value="">Select flavor</option>{flavors.map(f=><option key={f.id} value={f.id}>{f.name}</option>)}</select>
-          <input className="input-wide" style={{flex:1,minWidth:80}} type="number" step="0.5" min="0.5" placeholder="Batches" value={batches} onChange={e=>setBatches(e.target.value)}/>
-          <input className="input-wide" style={{flex:2}} placeholder="Notes (optional)" value={note} onChange={e=>setNote(e.target.value)}/>
-          <button className="btn btn-green" onClick={logProd}>Log</button>
+      {/* Mode toggle */}
+      <div className="tab-pills">
+        <button className={mode==='cookies'?'active':''} onClick={()=>setMode('cookies')}>Cookie Bins</button>
+        <button className={mode==='dough'?'active':''} onClick={()=>setMode('dough')}>Cookie Dough</button>
+      </div>
+
+      {mode === 'cookies' && <>
+        <div className="card"><h3>Log Dough Production (Cookies)</h3><p className="sub">Record cookie dough batches made. All production at Petoskey.</p>
+          <div style={{display:'flex',gap:8,marginTop:12,flexWrap:'wrap'}}>
+            <select className="select" style={{flex:2}} value={flavor} onChange={e=>setFlavor(e.target.value)}><option value="">Select flavor</option>{flavors.map(f=><option key={f.id} value={f.id}>{f.name}</option>)}</select>
+            <input className="input-wide" style={{flex:1,minWidth:80}} type="number" step="0.5" min="0.5" placeholder="Batches" value={batches} onChange={e=>setBatches(e.target.value)}/>
+            <input className="input-wide" style={{flex:2}} placeholder="Notes (optional)" value={note} onChange={e=>setNote(e.target.value)}/>
+            <button className="btn btn-green" onClick={logProd}>Log</button>
+          </div>
         </div>
-      </div>
-      <div className="card"><h3>Recent Production</h3>
-        {logs.length===0?<p style={{color:'var(--gray)',padding:20,textAlign:'center'}}>No production logged yet.</p>:(
-          <table style={{marginTop:10}}><thead><tr><th>Date</th><th>Flavor</th><th className="c">Batches</th><th>Notes</th></tr></thead>
-          <tbody>{logs.map(l=><tr key={l.id}><td>{l.date}</td><td style={{fontWeight:500}}>{flavors.find(f=>f.id===l.flavor_id)?.name||'?'}</td><td className="c" style={{fontWeight:700}}>{l.batches}</td><td style={{color:'var(--gray)',fontSize:12}}>{l.notes||'—'}</td></tr>)}</tbody></table>
-        )}
-      </div>
+        <div className="card"><h3>Recent Cookie Production</h3>
+          {logs.length===0?<p style={{color:'var(--gray)',padding:20,textAlign:'center'}}>No production logged yet.</p>:(
+            <table style={{marginTop:10}}><thead><tr><th>Date</th><th>Flavor</th><th className="c">Batches</th><th>Notes</th></tr></thead>
+            <tbody>{logs.map(l=><tr key={l.id}><td>{l.date}</td><td style={{fontWeight:500}}>{flavors.find(f=>f.id===l.flavor_id)?.name||'?'}</td><td className="c" style={{fontWeight:700}}>{l.batches}</td><td style={{color:'var(--gray)',fontSize:12}}>{l.notes||'—'}</td></tr>)}</tbody></table>
+          )}
+        </div>
+      </>}
+
+      {mode === 'dough' && <>
+        <div className="card">
+          <h3>Log Cookie Dough Production</h3>
+          <p className="sub">Pick flavor + batch size. System calculates containers automatically.</p>
+          <div style={{display:'flex',flexDirection:'column',gap:10,marginTop:12}}>
+            <select className="select" value={doughProduct} onChange={e=>setDoughProduct(e.target.value)}>
+              <option value="">Select cookie dough flavor</option>
+              {cookieDoughProducts.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+            <div style={{display:'flex',gap:8}}>
+              <button
+                className={`btn ${doughFraction==='quarter'?'btn-blue':'btn-outline'}`}
+                style={{flex:1,padding:'12px'}}
+                onClick={()=>setDoughFraction('quarter')}>¼ Batch</button>
+              <button
+                className={`btn ${doughFraction==='half'?'btn-blue':'btn-outline'}`}
+                style={{flex:1,padding:'12px'}}
+                onClick={()=>setDoughFraction('half')}>½ Batch</button>
+            </div>
+            {yieldPreview && (
+              <div style={{background:'var(--bg)',padding:12,borderRadius:8,borderLeft:'3px solid var(--green)'}}>
+                <div style={{fontSize:13,color:'var(--gray)'}}>Projected yield:</div>
+                <div className="serif" style={{fontSize:22,fontWeight:700,color:'var(--green)'}}>~{yieldPreview.containers} containers</div>
+                <div style={{fontSize:11,color:'var(--gray)',marginTop:2}}>
+                  ({yieldPreview.totalGrams.toLocaleString()}g ÷ 198.4g/container)
+                </div>
+              </div>
+            )}
+            <select className="select" value={doughLoc} onChange={e=>setDoughLoc(e.target.value)}>
+              <option value="1">Petoskey</option>
+              <option value="2">Traverse City</option>
+            </select>
+            <input className="input-wide" placeholder="Notes (optional)" value={doughNote} onChange={e=>setDoughNote(e.target.value)}/>
+            <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
+              <button className="btn btn-green" style={{flex:1,padding:'10px',maxWidth:300}}
+                onClick={logDough}
+                disabled={!doughProduct || !yieldPreview || savingDough}>
+                {savingDough ? 'Logging...' : `Log ${doughFraction==='half'?'½':'¼'} Batch`}
+              </button>
+              {doughMsg && <span style={{color:doughMsg.startsWith('✓')?'var(--green)':'var(--red)',fontSize:13,fontWeight:600}}>{doughMsg}</span>}
+            </div>
+          </div>
+        </div>
+        <div className="card">
+          <h3>Recent Cookie Dough Production</h3>
+          {doughLogs.length===0?<p style={{color:'var(--gray)',padding:20,textAlign:'center'}}>No cookie dough logged yet.</p>:(
+            <table style={{marginTop:10}}>
+              <thead><tr><th>Date</th><th>Product</th><th className="c">Batch</th><th className="c">Containers</th><th>Notes</th></tr></thead>
+              <tbody>{doughLogs.map(l=>{
+                const p = cookieDoughProducts.find(p=>p.id===l.product_id);
+                return <tr key={l.id}>
+                  <td>{l.date}</td>
+                  <td style={{fontWeight:500}}>{p?p.name:'?'}</td>
+                  <td className="c">{l.batch_fraction==='half'?'½':l.batch_fraction==='quarter'?'¼':l.batch_fraction}</td>
+                  <td className="c" style={{fontWeight:700,color:'var(--green)'}}>{l.quantity_made}</td>
+                  <td style={{color:'var(--gray)',fontSize:12}}>{l.notes||'—'}</td>
+                </tr>;
+              })}</tbody>
+            </table>
+          )}
+        </div>
+      </>}
     </div>
   );
 }
@@ -2047,6 +2311,7 @@ function App() {
   const [tab, setTab] = useState('production');
   const [loc, setLoc] = useState('petoskey');
   const [flavors, setFlavors] = useState([]);
+  const [products, setProducts] = useState([]);
   const [dashData, setDashData] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -2057,6 +2322,8 @@ function App() {
     try {
       const {data: fl} = await db('flavors','select',{filters:{status:{in:['live','pre_production']}},orderBy:'type'});
       setFlavors(fl || []);
+      const {data: prods} = await db('products','select',{filters:{status:'live'},orderBy:'product_type'});
+      setProducts(prods || []);
       const dash = await api('dashboard');
       setDashData(dash);
     } catch(e) { console.error('Load error:', e); }
@@ -2089,14 +2356,14 @@ function App() {
         <div style={{width:160}}/>
       </header>
       <main>
-        {tab==='dough' && <DoughTab loc={loc} setLoc={setLoc} flavors={flavors} dashData={dashData} onSaved={loadData}/>}
+        {tab==='dough' && <DoughTab loc={loc} setLoc={setLoc} flavors={flavors} products={products} dashData={dashData} onSaved={loadData}/>}
         {tab==='production' && <ProductionTab dashData={dashData}/>}
         {tab==='prep' && <PrepListTab dashData={dashData}/>}
         {tab==='orders' && <OrdersTab dashData={dashData}/>}
         {tab==='manual' && <ManualOrdersTab flavors={flavors}/>}
-        {tab==='log' && <LogProductionTab flavors={flavors}/>}
+        {tab==='log' && <LogProductionTab flavors={flavors} products={products}/>}
         {tab==='transfers' && <TransfersTab flavors={flavors}/>}
-        {tab==='settings' && <SettingsTab flavors={flavors} onRefresh={loadData}/>}
+        {tab==='settings' && <SettingsTab flavors={flavors} products={products} onRefresh={loadData}/>}
       </main>
     </div>
   );
