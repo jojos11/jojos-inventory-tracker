@@ -142,7 +142,7 @@ td.c{text-align:center}
 <div id="root"></div>
 <script type="text/babel">
 const CIRCLE_LOGO = '/api/config'; // placeholder - will use text instead
-const { useState, useEffect, useCallback } = React;
+const { useState, useEffect, useCallback, useRef } = React;
 
 let AUTH_TOKEN = null;
 const api = async (endpoint, body = {}) => {
@@ -1469,6 +1469,16 @@ function SettingsTab({flavors, onRefresh}) {
   const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
   const monthIdx = m => MONTHS.indexOf(m);
 
+  // Defer the parent dashboard reload until the user leaves Settings.
+  // The dashboard endpoint runs ~8 sequential DB queries per flavor, so calling
+  // it after every flavor add/edit caused multi-second lag. Settings has its
+  // own local state (allFlavors) that updates instantly via loadAllFlavors().
+  const dirtyRef = useRef(false);
+  const markDirty = () => { dirtyRef.current = true; };
+  useEffect(() => {
+    return () => { if (dirtyRef.current) onRefresh(); };
+  }, []);
+
   useEffect(() => {
     db('base_doughs','select').then(d=>setBases(d.data||[]));
     loadPantry();
@@ -1549,7 +1559,7 @@ function SettingsTab({flavors, onRefresh}) {
     setNf({name:'',type:'specialty',base_dough_id:'',is_stuffed:false,par_level_bins:6,restock_trigger_bins:3,status:'live',schedule_start_month:'',schedule_start_year:2026,schedule_end_month:'',schedule_end_year:2026,schedule_repeats:false});
     loadAllFlavors();
     loadSchedule();
-    onRefresh();
+    markDirty();
   };
 
   // Change flavor status: pre_production | live | retired
@@ -1560,7 +1570,7 @@ function SettingsTab({flavors, onRefresh}) {
       active: newStatus !== 'retired'
     }});
     await loadAllFlavors();
-    onRefresh();
+    markDirty();
     setSavingFlavor(null);
   };
 
@@ -1585,7 +1595,7 @@ function SettingsTab({flavors, onRefresh}) {
     await db('flavors','update',{id:flavorId, data});
     setFlavorEdits(prev => { const n = {...prev}; delete n[flavorId]; return n; });
     await loadAllFlavors();
-    onRefresh();
+    markDirty();
     setSavingFlavor(null);
   };
 
