@@ -86,8 +86,53 @@ td.c{text-align:center}
 .quick-btn.not-stocked{background:transparent;color:var(--gray2);font-size:10px;padding:6px 10px}
 .quick-btn.not-stocked.active{background:var(--gray2);color:#fff;border-color:var(--gray2)}
 .custom-input{width:56px;background:var(--bg);border:1px solid var(--blue);border-radius:6px;padding:6px 8px;color:#fff;font-size:13px;text-align:center;font-family:inherit}
+.step-btn{min-width:32px;width:32px;height:32px;padding:0;border-radius:6px;border:1px solid var(--blue);background:rgba(162,204,235,.08);color:var(--blue);font-size:18px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .12s;font-family:inherit;line-height:1}
+.step-btn:hover{background:var(--blue);color:#000}
+.step-btn:active{transform:scale(.95)}
+.step-val{min-width:30px;padding:0 6px;text-align:center;font-size:14px;font-weight:700;color:#fff;font-variant-numeric:tabular-nums}
+.step-divider{width:1px;height:24px;background:var(--border);margin:0 4px}
 .count-row.counted{background:rgba(76,175,80,.04)}
 .count-row.not-stocked{opacity:.6}
+
+/* ─── Inventory comparison page ──────────────────────────────────────── */
+.inv-page{display:flex;flex-direction:column;gap:14px}
+.inv-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.inv-sum-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.inv-sum-card-combined{background:rgba(162,204,235,.06);border-color:rgba(162,204,235,.25)}
+.inv-sum-label{font-size:11px;color:var(--gray);text-transform:uppercase;letter-spacing:.8px;font-weight:600}
+.inv-sum-value{font-size:28px;font-weight:700;color:#fff;margin-top:4px;font-variant-numeric:tabular-nums}
+.inv-sum-unit{font-size:12px;color:var(--gray);font-weight:400}
+.inv-sum-breakdown{display:flex;gap:14px;margin-top:6px;font-size:11px;color:var(--gray)}
+.inv-grid-header{display:grid;grid-template-columns:1.4fr 1fr 1fr .6fr;gap:12px;padding:12px 16px;background:var(--bg);border-bottom:1px solid var(--border);font-size:10px;color:var(--gray);text-transform:uppercase;letter-spacing:.8px;font-weight:700}
+.inv-loc-name{color:var(--blue);font-size:12px;letter-spacing:.4px}
+.inv-loc-sub{font-size:9px;color:var(--gray2);margin-top:2px;text-transform:none;letter-spacing:0;font-weight:400}
+.inv-row{display:grid;grid-template-columns:1.4fr 1fr 1fr .6fr;gap:12px;padding:12px 16px;border-bottom:1px solid rgba(51,51,51,.4);align-items:center}
+.inv-row:hover{background:rgba(162,204,235,.03)}
+.inv-row:last-child{border-bottom:none}
+.inv-cell-flavor{display:flex;flex-direction:column}
+.inv-cell-loc{display:flex;flex-direction:column;gap:4px;padding:6px 10px;border-radius:6px;background:rgba(0,0,0,.15)}
+.inv-cell-loc.inv-low{background:rgba(239,83,80,.08);border:1px solid rgba(239,83,80,.2)}
+.inv-numbers{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;font-variant-numeric:tabular-nums}
+.inv-num{font-size:13px;font-weight:500;color:#ccc}
+.inv-fridge{color:#fff}
+.inv-freezer{color:#fff}
+.inv-total{color:var(--blue);font-weight:700;font-size:14px;margin-left:auto}
+.inv-staleness{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--gray)}
+.inv-cell-combined{text-align:right}
+.inv-combined-num{font-size:22px;font-weight:700;color:var(--blue);font-variant-numeric:tabular-nums}
+.inv-combined-sub{font-size:10px;text-transform:uppercase;letter-spacing:.6px;font-weight:600;margin-top:2px}
+.stale-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--gray2)}
+.stale-dot.stale-ok{background:var(--green)}
+.stale-dot.stale-yellow{background:var(--yellow)}
+.stale-dot.stale-red{background:var(--red)}
+.stale-dot.stale-none{background:var(--gray2)}
+@media (max-width:768px){
+  .inv-grid-header{display:none}
+  .inv-row{grid-template-columns:1fr;gap:8px;padding:14px 12px}
+  .inv-cell-flavor{border-bottom:1px solid var(--border);padding-bottom:6px;margin-bottom:4px}
+  .inv-cell-loc::before{content:attr(data-loc);display:block;font-size:10px;color:var(--blue);text-transform:uppercase;letter-spacing:.8px;font-weight:700;margin-bottom:3px}
+  .inv-cell-combined{text-align:left;border-top:1px solid var(--border);padding-top:6px;display:flex;justify-content:space-between;align-items:center}
+}
 
 /* Count status banner */
 .count-status{display:flex;gap:12px;margin-bottom:14px;flex-wrap:wrap}
@@ -333,6 +378,25 @@ function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
     });
   };
 
+  // Step count up or down by 0.25, floor at 0. Used by the +/− buttons next to
+  // each storage row so employees can fine-tune the value after picking a preset.
+  // If current value is empty, +/− starts from 0.
+  const stepCount = (fId, storage, delta) => {
+    setCounts(c => {
+      const current = c[fId]?.[storage];
+      const num = current !== undefined && current !== '' ? parseFloat(current) : 0;
+      const next = Math.max(0, Math.round((num + delta) * 4) / 4);  // snap to 0.25
+      return {
+        ...c,
+        [fId]: { ...(c[fId] || {}), [storage]: String(next) }
+      };
+    });
+    setNotStocked(ns => {
+      if (ns[fId]) { const next = {...ns}; delete next[fId]; return next; }
+      return ns;
+    });
+  };
+
   const toggleNotStocked = (fId) => {
     setNotStocked(ns => {
       const next = {...ns};
@@ -536,11 +600,28 @@ function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
     const variance = hasVariance(f.id);
     const total = getFlavorTotal(f.id);
 
-    // Helper to render a single preset bank for fridge or freezer
+    // Helper to render a single preset bank for fridge or freezer.
+    // Layout: [−] [value display] [+] | preset buttons | custom
+    // The stepper lets employees nudge by 0.25 without typing or using prompts.
     const presetBank = (storage, value) => {
       const showCustom = value !== '' && !presets.includes(value);
+      const displayVal = value === '' ? '—' :
+        value === '0.25' ? '¼' :
+        value === '0.5' ? '½' :
+        value === '0.75' ? '¾' :
+        value;
       return (
         <div className="quick-btns">
+          <button
+            className="step-btn"
+            onClick={()=>stepCount(f.id, storage, -0.25)}
+            title="Decrease by ¼ bin">−</button>
+          <span className="step-val" title="Current value">{displayVal}</span>
+          <button
+            className="step-btn"
+            onClick={()=>stepCount(f.id, storage, 0.25)}
+            title="Increase by ¼ bin">+</button>
+          <span className="step-divider"/>
           {presets.map(p => (
             <button key={p}
               className={`quick-btn ${value===p && !isNS ? 'active' : ''}`}
@@ -1388,6 +1469,261 @@ function TransfersTab({flavors}) {
     </div>
   );
 }
+
+// ─── INVENTORY (side-by-side comparison view) ──────────────────────────────
+// Simple read-only inventory dashboard for managers. Shows the latest count
+// per (flavor, location, storage) in a Petoskey vs TC side-by-side layout.
+// One query pulls the last 30 days of snapshots, then we pick the most recent
+// per (flavor, location, storage) client-side. Much faster than looping queries.
+function InventoryTab({flavors}) {
+  const [inventory, setInventory] = useState({});  // {flavorId: {pet: {fridge, freezer, fridgeAt, freezerAt}, tc: {...}}}
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [hideEmpty, setHideEmpty] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      // Pull last 60 days of snapshots in one shot — covers any reasonable
+      // gap in counting. Snapshots are small rows so this is fast.
+      const cutoff = new Date(Date.now() - 60 * 86400000).toISOString();
+      const {data: snaps} = await db('inventory_snapshots','select',{
+        filters:{created_at:{gte:cutoff}},
+        orderBy:'created_at:desc'
+      });
+
+      // Build {flavorId: {pet: {fridge, freezer, fridgeAt, freezerAt}, tc: {...}}}
+      // Since results come back DESC, the first time we see a key is the latest.
+      const inv = {};
+      for (const s of (snaps || [])) {
+        const fId = s.flavor_id;
+        const locKey = s.location_id === 1 ? 'pet' : s.location_id === 2 ? 'tc' : null;
+        if (!locKey) continue;
+        const storage = s.storage || 'fridge';
+        if (!inv[fId]) inv[fId] = { pet: {}, tc: {} };
+        const slot = inv[fId][locKey];
+        if (slot[storage] === undefined) {
+          slot[storage] = s.actual_bins !== null ? Number(s.actual_bins) : null;
+          slot[storage + 'At'] = s.created_at;
+        }
+      }
+      setInventory(inv);
+      setLoading(false);
+    })();
+  }, []);
+
+  // Format a date as "today / yesterday / Mar 14"
+  const fmtWhen = (iso) => {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    const now = new Date();
+    const ms = now - d;
+    const hours = ms / 3600000;
+    if (hours < 18) return 'today';
+    if (hours < 42) return 'yesterday';
+    const days = Math.floor(hours / 24);
+    if (days < 7) return `${days}d ago`;
+    return d.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+  };
+
+  // Staleness: red if >3 days old, yellow if >24h
+  const stalenessClass = (iso) => {
+    if (!iso) return 'stale-none';
+    const hours = (Date.now() - new Date(iso).getTime()) / 3600000;
+    if (hours > 72) return 'stale-red';
+    if (hours > 30) return 'stale-yellow';
+    return 'stale-ok';
+  };
+
+  const fmtBins = (v) => {
+    if (v === undefined || v === null) return '—';
+    if (v === 0) return '0';
+    // Show as fraction for clean halves/quarters
+    if (v === 0.25) return '¼';
+    if (v === 0.5) return '½';
+    if (v === 0.75) return '¾';
+    if (Number.isInteger(v)) return String(v);
+    // Mixed numbers: 1.5 → "1½", 2.25 → "2¼"
+    const whole = Math.floor(v);
+    const frac = v - whole;
+    if (frac === 0.25) return `${whole}¼`;
+    if (frac === 0.5) return `${whole}½`;
+    if (frac === 0.75) return `${whole}¾`;
+    return String(v);
+  };
+
+  const locTotal = (entry) => {
+    if (!entry) return 0;
+    return (entry.fridge || 0) + (entry.freezer || 0);
+  };
+
+  // Filter flavors: only show live, optionally filter by search and empty
+  const visibleFlavors = flavors
+    .filter(f => f.status === 'live' || !f.status)
+    .filter(f => !search || f.name.toLowerCase().includes(search.toLowerCase()))
+    .filter(f => {
+      if (!hideEmpty) return true;
+      const inv = inventory[f.id];
+      if (!inv) return false;
+      return locTotal(inv.pet) > 0 || locTotal(inv.tc) > 0;
+    })
+    .sort((a,b) => {
+      // Sort by type first (classic, specialty, extra), then name
+      const typeOrder = {classic:0, specialty:1, extra:2};
+      const tDiff = (typeOrder[a.type] ?? 9) - (typeOrder[b.type] ?? 9);
+      if (tDiff !== 0) return tDiff;
+      return a.name.localeCompare(b.name);
+    });
+
+  // Compute grand totals across all flavors per location
+  let petGrandFridge = 0, petGrandFreezer = 0, tcGrandFridge = 0, tcGrandFreezer = 0;
+  for (const f of visibleFlavors) {
+    const inv = inventory[f.id];
+    if (!inv) continue;
+    petGrandFridge += inv.pet.fridge || 0;
+    petGrandFreezer += inv.pet.freezer || 0;
+    tcGrandFridge += inv.tc.fridge || 0;
+    tcGrandFreezer += inv.tc.freezer || 0;
+  }
+  const petGrand = petGrandFridge + petGrandFreezer;
+  const tcGrand = tcGrandFridge + tcGrandFreezer;
+
+  if (loading) return <div className="card"><p style={{color:'var(--gray)',padding:20,textAlign:'center'}}>Loading inventory...</p></div>;
+
+  return (
+    <div className="inv-page">
+      {/* Header summary cards */}
+      <div className="inv-summary">
+        <div className="inv-sum-card">
+          <div className="inv-sum-label">Petoskey Total</div>
+          <div className="inv-sum-value">{fmtBins(petGrand)} <span className="inv-sum-unit">bins</span></div>
+          <div className="inv-sum-breakdown">
+            <span>❄ {fmtBins(petGrandFridge)} fridge</span>
+            <span>🧊 {fmtBins(petGrandFreezer)} freezer</span>
+          </div>
+        </div>
+        <div className="inv-sum-card">
+          <div className="inv-sum-label">Traverse City Total</div>
+          <div className="inv-sum-value">{fmtBins(tcGrand)} <span className="inv-sum-unit">bins</span></div>
+          <div className="inv-sum-breakdown">
+            <span>❄ {fmtBins(tcGrandFridge)} fridge</span>
+            <span>🧊 {fmtBins(tcGrandFreezer)} freezer</span>
+          </div>
+        </div>
+        <div className="inv-sum-card inv-sum-card-combined">
+          <div className="inv-sum-label">Combined Total</div>
+          <div className="inv-sum-value">{fmtBins(petGrand + tcGrand)} <span className="inv-sum-unit">bins</span></div>
+          <div className="inv-sum-breakdown">
+            <span>across {visibleFlavors.length} flavors</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Controls */}
+      <div className="card" style={{padding:'12px 16px'}}>
+        <div style={{display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
+          <input
+            className="input"
+            style={{flex:'1 1 200px',maxWidth:300}}
+            type="text"
+            placeholder="Search flavor..."
+            value={search}
+            onChange={e=>setSearch(e.target.value)}
+          />
+          <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'var(--gray)',cursor:'pointer'}}>
+            <input type="checkbox" checked={hideEmpty} onChange={e=>setHideEmpty(e.target.checked)}/>
+            Hide flavors with zero stock at both locations
+          </label>
+          <div style={{marginLeft:'auto',fontSize:11,color:'var(--gray)',display:'flex',gap:12,alignItems:'center'}}>
+            <span><span className="stale-dot stale-ok"/> Fresh</span>
+            <span><span className="stale-dot stale-yellow"/> &gt;24h</span>
+            <span><span className="stale-dot stale-red"/> &gt;3d</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Main comparison grid */}
+      <div className="card" style={{padding:0,overflow:'hidden'}}>
+        <div className="inv-grid-header">
+          <div className="inv-cell-flavor">Flavor</div>
+          <div className="inv-cell-loc">
+            <div className="inv-loc-name">Petoskey</div>
+            <div className="inv-loc-sub">Fridge · Freezer · Total</div>
+          </div>
+          <div className="inv-cell-loc">
+            <div className="inv-loc-name">Traverse City</div>
+            <div className="inv-loc-sub">Fridge · Freezer · Total</div>
+          </div>
+          <div className="inv-cell-combined">Combined</div>
+        </div>
+        {visibleFlavors.length === 0 && (
+          <p style={{padding:20,textAlign:'center',color:'var(--gray)'}}>No flavors match.</p>
+        )}
+        {visibleFlavors.map(f => {
+          const inv = inventory[f.id] || {pet:{}, tc:{}};
+          const petTotal = locTotal(inv.pet);
+          const tcTotal = locTotal(inv.tc);
+          const combined = petTotal + tcTotal;
+          const par = f.par_level_bins ? Number(f.par_level_bins) : 0;
+          const restock = f.restock_trigger_bins ? Number(f.restock_trigger_bins) : 0;
+          // Use the more recent of fridge/freezer for staleness per location
+          const petLatestAt = [inv.pet.fridgeAt, inv.pet.freezerAt].filter(Boolean).sort().pop();
+          const tcLatestAt = [inv.tc.fridgeAt, inv.tc.freezerAt].filter(Boolean).sort().pop();
+
+          return (
+            <div key={f.id} className="inv-row">
+              <div className="inv-cell-flavor">
+                <div style={{fontWeight:600}}>{f.name}</div>
+                <div style={{fontSize:10,color:'var(--gray)',textTransform:'uppercase',letterSpacing:'.6px',marginTop:2}}>
+                  {f.type}{par ? ` · par ${fmtBins(par)}` : ''}
+                </div>
+              </div>
+
+              {/* Petoskey */}
+              <div className={`inv-cell-loc ${combined > 0 && petTotal < restock ? 'inv-low' : ''}`} data-loc="Petoskey">
+                <div className="inv-numbers">
+                  <span className="inv-num inv-fridge" title="Fridge">❄ {fmtBins(inv.pet.fridge)}</span>
+                  <span className="inv-num inv-freezer" title="Freezer">🧊 {fmtBins(inv.pet.freezer)}</span>
+                  <span className="inv-num inv-total" title="Total">= {fmtBins(petTotal)}</span>
+                </div>
+                <div className="inv-staleness">
+                  <span className={`stale-dot ${stalenessClass(petLatestAt)}`}/>
+                  <span>last count: {fmtWhen(petLatestAt)}</span>
+                </div>
+              </div>
+
+              {/* Traverse City */}
+              <div className={`inv-cell-loc ${combined > 0 && tcTotal < restock ? 'inv-low' : ''}`} data-loc="Traverse City">
+                <div className="inv-numbers">
+                  <span className="inv-num inv-fridge" title="Fridge">❄ {fmtBins(inv.tc.fridge)}</span>
+                  <span className="inv-num inv-freezer" title="Freezer">🧊 {fmtBins(inv.tc.freezer)}</span>
+                  <span className="inv-num inv-total" title="Total">= {fmtBins(tcTotal)}</span>
+                </div>
+                <div className="inv-staleness">
+                  <span className={`stale-dot ${stalenessClass(tcLatestAt)}`}/>
+                  <span>last count: {fmtWhen(tcLatestAt)}</span>
+                </div>
+              </div>
+
+              {/* Combined */}
+              <div className="inv-cell-combined">
+                <div className="inv-combined-num">{fmtBins(combined)}</div>
+                <div className="inv-combined-sub">
+                  {par > 0 && (
+                    <span style={{color: combined >= par ? 'var(--green)' : combined >= restock ? 'var(--yellow)' : 'var(--red)'}}>
+                      {combined >= par ? '✓ at par' : combined >= restock ? 'below par' : 'restock'}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 
 // ─── SYNC ───────────────────────────
 function SyncTab() {
@@ -2347,6 +2683,7 @@ function App() {
 
   const tabs = [
     {id:'production',label:'Production'},
+    {id:'inventory',label:'Inventory'},
     {id:'prep',label:'Prep List'},
     {id:'dough',label:'Nightly Count'},
     {id:'orders',label:'Order Lists'},
@@ -2368,6 +2705,7 @@ function App() {
       <main>
         {tab==='dough' && <DoughTab loc={loc} setLoc={setLoc} flavors={flavors} products={products} dashData={dashData} onSaved={loadData}/>}
         {tab==='production' && <ProductionTab dashData={dashData}/>}
+        {tab==='inventory' && <InventoryTab flavors={flavors}/>}
         {tab==='prep' && <PrepListTab dashData={dashData}/>}
         {tab==='orders' && <OrdersTab dashData={dashData}/>}
         {tab==='manual' && <ManualOrdersTab flavors={flavors}/>}
