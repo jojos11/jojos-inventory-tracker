@@ -334,46 +334,53 @@ function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
       const {data: emps} = await db('employees','select',{filters:{active:true},orderBy:'name'});
       setEmployees(emps || []);
 
-      // Get previous (most recent) count per flavor at this location, both fridge and freezer
+      // Get previous (most recent) count per flavor at this location.
+      // OPTIMIZATION: previously this fired 2 queries per flavor (one for fridge,
+      // one for freezer), serially. With 18+ flavors that's 36+ round-trips
+      // before the page can render. Now: one bulk query pulls the last 60 days
+      // of snapshots for this location, and we pick the latest per
+      // (flavor, storage) client-side. Two queries total (snapshots + products)
+      // regardless of flavor count.
+      const cutoff = new Date(Date.now() - 60 * 86400000).toISOString();
+      const [{data: allSnaps}, {data: allProdSnaps}] = await Promise.all([
+        db('inventory_snapshots','select',{
+          filters:{location_id:locId, created_at:{gte:cutoff}},
+          orderBy:'created_at:desc'
+        }),
+        db('product_snapshots','select',{
+          filters:{location_id:locId, created_at:{gte:cutoff}},
+          orderBy:'created_at:desc'
+        })
+      ]);
+
+      // Build the "previous count" map for flavors. Snapshots are pre-sorted
+      // by created_at:desc, so the first match per (flavor_id, storage) wins.
       const prev = {};
-      for (const f of liveFlavors) {
-        // Fridge
-        const {data: fridgeData} = await db('inventory_snapshots','select',{
-          filters:{flavor_id:f.id, location_id:locId, storage:'fridge'},
-          orderBy:'created_at:desc',
-          limit:1
-        });
-        // Freezer
-        const {data: freezerData} = await db('inventory_snapshots','select',{
-          filters:{flavor_id:f.id, location_id:locId, storage:'freezer'},
-          orderBy:'created_at:desc',
-          limit:1
-        });
-        const fridgeBins = fridgeData && fridgeData.length > 0 && fridgeData[0].actual_bins !== null
-          ? Number(fridgeData[0].actual_bins) : null;
-        const freezerBins = freezerData && freezerData.length > 0 && freezerData[0].actual_bins !== null
-          ? Number(freezerData[0].actual_bins) : null;
-        if (fridgeBins !== null || freezerBins !== null) {
-          prev[f.id] = {
-            fridge: fridgeBins,
-            freezer: freezerBins,
-            total: (fridgeBins || 0) + (freezerBins || 0)
-          };
-        }
+      const seen = new Set();
+      for (const s of (allSnaps || [])) {
+        const key = `${s.flavor_id}_${s.storage || 'fridge'}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const storage = s.storage || 'fridge';
+        const bins = s.actual_bins !== null ? Number(s.actual_bins) : null;
+        if (bins === null) continue;
+        if (!prev[s.flavor_id]) prev[s.flavor_id] = { fridge: null, freezer: null, total: 0 };
+        prev[s.flavor_id][storage] = bins;
+      }
+      // Compute totals
+      for (const fId of Object.keys(prev)) {
+        const p = prev[fId];
+        p.total = (p.fridge || 0) + (p.freezer || 0);
       }
       setPrevCounts(prev);
 
-      // Get previous count per product at this location
+      // Same bulk-pick pattern for products
       const prevProd = {};
-      for (const p of liveProducts) {
-        const {data} = await db('product_snapshots','select',{
-          filters:{product_id:p.id, location_id:locId},
-          orderBy:'created_at:desc',
-          limit:1
-        });
-        if (data && data.length > 0 && data[0].quantity !== null) {
-          prevProd[p.id] = Number(data[0].quantity);
-        }
+      const seenP = new Set();
+      for (const s of (allProdSnaps || [])) {
+        if (seenP.has(s.product_id)) continue;
+        seenP.add(s.product_id);
+        if (s.quantity !== null) prevProd[s.product_id] = Number(s.quantity);
       }
       setPrevProductCounts(prevProd);
 
@@ -3421,14 +3428,24 @@ function App() {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const {data: fl} = await db('flavors','select',{filters:{status:{in:['live','pre_production']}},orderBy:'type'});
+      // Load lightweight reference data first so the UI can render quickly.
+      // The Production tab and a couple of widgets need dashData, but every
+      // other tab (Nightly Count, Inventory, Log Production, Pantry, etc.)
+      // can render without it. So we kick off the heavy dashboard call in
+      // the background and unblock everything else.
+      const [{data: fl}, {data: prods}] = await Promise.all([
+        db('flavors','select',{filters:{status:{in:['live','pre_production']}},orderBy:'type'}),
+        db('products','select',{filters:{status:'live'},orderBy:'product_type'})
+      ]);
       setFlavors(fl || []);
-      const {data: prods} = await db('products','select',{filters:{status:'live'},orderBy:'product_type'});
       setProducts(prods || []);
-      const dash = await api('dashboard');
-      setDashData(dash);
-    } catch(e) { console.error('Load error:', e); }
-    setLoading(false);
+      setLoading(false);
+      // Dashboard is slow (~140 queries). Don't block the UI on it.
+      api('dashboard').then(dash => setDashData(dash)).catch(e => console.error('Dashboard load error:', e));
+    } catch(e) {
+      console.error('Load error:', e);
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => { if (authed) loadData(); }, [authed, loadData]);
