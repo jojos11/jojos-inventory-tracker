@@ -107,6 +107,10 @@ td.c{text-align:center}
 .storage-fridge{background:rgba(162,204,235,.12);border-left-color:var(--blue);color:#fff}
 .storage-freezer{background:rgba(180,210,240,.08);border-left-color:#7FB3D9;color:#fff}
 .storage-icon{font-size:18px;line-height:1;filter:drop-shadow(0 0 4px rgba(162,204,235,.4))}
+.storage-last{font-size:10px;font-weight:600;color:rgba(255,255,255,.55);margin-left:6px;letter-spacing:0;text-transform:none}
+.storage-last strong{color:#fff;font-weight:700}
+.use-last-btn{padding:5px 12px;font-size:11px;font-weight:600;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--blue);cursor:pointer;transition:all .12s;font-family:inherit}
+.use-last-btn:hover{border-color:var(--blue);background:rgba(162,204,235,.08)}
 .count-row.counted{background:rgba(76,175,80,.04)}
 .count-row.not-stocked{opacity:.6}
 
@@ -372,8 +376,11 @@ function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
         if (raw) {
           const draft = JSON.parse(raw);
           const ageMs = Date.now() - (draft.savedAt || 0);
-          // Only restore drafts younger than 18 hours
-          if (ageMs < 18 * 3600000) {
+          // Only restore drafts younger than 18 hours AND that include the new
+          // 'confirmed' field. Older drafts from before the pre-fill feature
+          // are stale by design — they'd block pre-fill from running.
+          const hasNewSchema = draft.confirmed !== undefined;
+          if (ageMs < 18 * 3600000 && hasNewSchema) {
             if (draft.counts) setCounts(draft.counts);
             if (draft.notStocked) setNotStocked(draft.notStocked);
             if (draft.confirmed) setConfirmed(draft.confirmed);
@@ -384,6 +391,7 @@ function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
             if (draft.notes) setNotes(draft.notes);
             restoredFromDraft = true;
           } else {
+            // Stale or pre-feature draft: nuke it so pre-fill can run
             localStorage.removeItem(storageKey);
           }
         }
@@ -802,13 +810,51 @@ function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
         {!isNS && (
           <div className="storage-grid">
             <div className="storage-row">
-              <span className="storage-label storage-fridge"><span className="storage-icon">❄</span> FRIDGE</span>
+              <span className="storage-label storage-fridge">
+                <span className="storage-icon">❄</span> FRIDGE
+                {prev && prev.fridge !== null && prev.fridge !== undefined && (
+                  <span className="storage-last">last: <strong>{prev.fridge}</strong></span>
+                )}
+              </span>
               {presetBank('fridge', fridgeVal)}
             </div>
             <div className="storage-row">
-              <span className="storage-label storage-freezer"><span className="storage-icon">🧊</span> FREEZER</span>
+              <span className="storage-label storage-freezer">
+                <span className="storage-icon">🧊</span> FREEZER
+                {prev && prev.freezer !== null && prev.freezer !== undefined && (
+                  <span className="storage-last">last: <strong>{prev.freezer}</strong></span>
+                )}
+              </span>
               {presetBank('freezer', freezerVal)}
             </div>
+            {prev && (prev.fridge !== null || prev.freezer !== null) && (
+              <div style={{display:'flex',justifyContent:'flex-end',marginTop:2}}>
+                <button
+                  className="use-last-btn"
+                  onClick={()=>{
+                    // One-tap shortcut: apply previous count as current and mark confirmed
+                    setCounts(c => {
+                      const next = {...c, [f.id]: {...(c[f.id] || {})}};
+                      if (prev.fridge !== null && prev.fridge !== undefined) next[f.id].fridge = String(prev.fridge);
+                      if (prev.freezer !== null && prev.freezer !== undefined) next[f.id].freezer = String(prev.freezer);
+                      return next;
+                    });
+                    setConfirmed(cf => {
+                      const next = {...cf, [f.id]: {...(cf[f.id] || {})}};
+                      if (prev.fridge !== null && prev.fridge !== undefined) next[f.id].fridge = true;
+                      if (prev.freezer !== null && prev.freezer !== undefined) next[f.id].freezer = true;
+                      return next;
+                    });
+                    setNotStocked(ns => {
+                      if (ns[f.id]) { const n = {...ns}; delete n[f.id]; return n; }
+                      return ns;
+                    });
+                  }}
+                  title="Use last count's values for this flavor">
+                  ↺ Use last count
+                </button>
+              </div>
+            )}
           </div>
         )}
 
