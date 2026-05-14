@@ -57,6 +57,8 @@ td.c{text-align:center}
 .select:focus{border-color:var(--blue);outline:none}
 .modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;z-index:200;backdrop-filter:blur(4px)}
 .modal{background:var(--card);border-radius:12px;border:1px solid var(--border);padding:24px;max-width:560px;width:90%;max-height:85vh;overflow-y:auto}
+.clickable-row{cursor:pointer;transition:background .12s}
+.clickable-row:hover{background:rgba(162,204,235,.06)}
 .alert{padding:10px 14px;border-radius:8px;margin-bottom:8px;font-size:13px;display:flex;align-items:center;gap:8px}
 .alert-critical{background:rgba(239,83,80,.12);border:1px solid rgba(239,83,80,.25);color:var(--red)}
 .alert-warning{background:rgba(255,179,0,.1);border:1px solid rgba(255,179,0,.2);color:var(--yellow)}
@@ -92,7 +94,7 @@ td.c{text-align:center}
 .step-val{min-width:30px;padding:0 6px;text-align:center;font-size:14px;font-weight:700;color:#fff;font-variant-numeric:tabular-nums}
 .step-val.provisional{color:var(--yellow);font-style:italic;opacity:.7;font-weight:600}
 .provisional-input{border-color:var(--yellow) !important;color:var(--yellow) !important;font-style:italic;opacity:.85}
-.provisional-banner{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;padding:12px 16px;background:rgba(255,179,0,.08);border:1px solid rgba(255,179,0,.25);border-radius:8px;margin-top:10px;font-size:13px;color:#fff;line-height:1.4}
+.provisional-banner{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;padding:12px 16px;background:rgba(162,204,235,.08);border:1px solid rgba(162,204,235,.25);border-radius:8px;margin-top:10px;font-size:13px;color:#fff;line-height:1.4}
 .step-divider{width:1px;height:24px;background:var(--border);margin:0 4px}
 
 /* Storage rows: fridge and freezer label columns align vertically.
@@ -142,6 +144,7 @@ td.c{text-align:center}
 .stale-dot.stale-yellow{background:var(--yellow)}
 .stale-dot.stale-red{background:var(--red)}
 .stale-dot.stale-none{background:var(--gray2)}
+.inv-product-header{padding:14px 16px;background:linear-gradient(90deg,rgba(162,204,235,.08),transparent);border-bottom:1px solid var(--border);font-size:13px;font-weight:700;color:var(--blue);text-transform:uppercase;letter-spacing:.8px;display:flex;align-items:center;gap:8px}
 @media (max-width:768px){
   .inv-grid-header{display:none}
   .inv-row{grid-template-columns:1fr;gap:8px;padding:14px 12px}
@@ -386,24 +389,44 @@ function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
         }
       } catch(e) { /* ignore parse errors */ }
 
-      // No draft: seed counts from previous values (provisional, unconfirmed)
+      // No draft: seed counts from previous values AND mark them confirmed.
+      // Per Marisa's feedback: she's counting on a tablet at the freezer/fridge
+      // and even one tap per flavor adds up across 17 flavors × 2 locations.
+      // Pre-fill values are accepted by default — the variance check (≥2.5x or
+      // ≤0.3x of previous) still catches huge swings as a safety net.
+      // Employees only need to interact with flavors whose counts CHANGED.
       if (!restoredFromDraft) {
         const seedCounts = {};
+        const seedConfirmed = {};
         for (const fId of Object.keys(prev)) {
           const p = prev[fId];
           const entry = {};
-          if (p.fridge !== null && p.fridge !== undefined) entry.fridge = String(p.fridge);
-          if (p.freezer !== null && p.freezer !== undefined) entry.freezer = String(p.freezer);
-          if (Object.keys(entry).length > 0) seedCounts[fId] = entry;
+          const confEntry = {};
+          if (p.fridge !== null && p.fridge !== undefined) {
+            entry.fridge = String(p.fridge);
+            confEntry.fridge = true;
+          }
+          if (p.freezer !== null && p.freezer !== undefined) {
+            entry.freezer = String(p.freezer);
+            confEntry.freezer = true;
+          }
+          if (Object.keys(entry).length > 0) {
+            seedCounts[fId] = entry;
+            seedConfirmed[fId] = confEntry;
+          }
         }
         setCounts(seedCounts);
+        setConfirmed(seedConfirmed);
 
         // Same for products
         const seedProd = {};
+        const seedProdConfirmed = {};
         for (const pId of Object.keys(prevProd)) {
           seedProd[pId] = String(prevProd[pId]);
+          seedProdConfirmed[pId] = true;
         }
         setProductCounts(seedProd);
+        setProductConfirmed(seedProdConfirmed);
       }
     })();
   }, [locId, flavors, products]);
@@ -874,16 +897,12 @@ function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
           </div>
         </div>
 
-        {provisionalCount > 0 && (
+        {Object.keys(prevCounts).length > 0 && (
           <div className="provisional-banner">
             <div>
-              <strong style={{color:'var(--yellow)'}}>{provisionalCount}</strong> item{provisionalCount===1?'':'s'} pre-filled from last count.
-              If the count hasn't changed, tap to confirm. Otherwise adjust with the −/+ buttons or presets.
+              <strong style={{color:'var(--blue)'}}>Counts pre-filled</strong> from last count.
+              Just update the flavors that changed — the rest will save as-is.
             </div>
-            <button className="btn btn-blue" style={{padding:'8px 14px',fontSize:12,whiteSpace:'nowrap'}}
-              onClick={confirmAllProvisional}>
-              ✓ Confirm all unchanged
-            </button>
           </div>
         )}
 
@@ -1352,15 +1371,19 @@ function OrdersTab({dashData}) {
 function ManualOrdersTab({flavors}) {
   const [orders, setOrders] = useState([]);
   const [showAdd, setShowAdd] = useState(false);
+  const [editOrder, setEditOrder] = useState(null); // The order being viewed/edited
   const [newOrder, setNewOrder] = useState({order_type:'catering',customer_name:'',fulfillment_date:'',notes:'',items:[]});
   const [newItem, setNewItem] = useState({flavor_id:'',quantity:'',cookie_oz:4});
+
   const load = () => db('manual_orders','select',{select:'*, manual_order_items(*)',orderBy:'fulfillment_date'}).then(d=>setOrders(d.data||[]));
   useEffect(() => { load(); }, []);
+
   const addItem = () => {
     if (!newItem.flavor_id || !newItem.quantity) return;
     setNewOrder({...newOrder, items:[...newOrder.items, {...newItem, flavor_name: flavors.find(f=>f.id==newItem.flavor_id)?.name}]});
     setNewItem({flavor_id:'',quantity:'',cookie_oz:4});
   };
+
   const saveOrder = async () => {
     try {
       const {data} = await db('manual_orders','insert',{data:{order_type:newOrder.order_type, customer_name:newOrder.customer_name, fulfillment_date:newOrder.fulfillment_date||null, notes:newOrder.notes, location_id:1}});
@@ -1368,28 +1391,104 @@ function ManualOrdersTab({flavors}) {
       setShowAdd(false); setNewOrder({order_type:'catering',customer_name:'',fulfillment_date:'',notes:'',items:[]}); load();
     } catch(e) { alert('Error: ' + e.message); }
   };
+
   const updateStatus = async (id, status) => { await db('manual_orders','update',{id,data:{status}}); load(); };
+
+  // Save edits to an existing order's top-level fields (customer, date, notes, type)
+  const saveOrderEdits = async () => {
+    if (!editOrder) return;
+    try {
+      await db('manual_orders','update',{id:editOrder.id, data:{
+        customer_name: editOrder.customer_name || null,
+        fulfillment_date: editOrder.fulfillment_date || null,
+        notes: editOrder.notes || null,
+        order_type: editOrder.order_type
+      }});
+      await load();
+      setEditOrder(null);
+    } catch(e) { alert('Error saving order: ' + e.message); }
+  };
+
+  // Delete a single item from an existing order
+  const deleteOrderItem = async (itemId) => {
+    if (!confirm('Remove this item from the order?')) return;
+    try {
+      await db('manual_order_items','delete',{id:itemId});
+      // Reload both the order list and the open modal
+      const {data} = await db('manual_orders','select',{
+        select:'*, manual_order_items(*)',
+        filters:{id:editOrder.id}
+      });
+      if (data?.[0]) setEditOrder(data[0]);
+      load();
+    } catch(e) { alert('Error removing item: ' + e.message); }
+  };
+
+  // Add an item to an existing order
+  const [addItemTo, setAddItemTo] = useState({flavor_id:'',quantity:'',cookie_oz:4});
+  const addItemToOrder = async () => {
+    if (!editOrder || !addItemTo.flavor_id || !addItemTo.quantity) return;
+    try {
+      const cookie_oz = parseFloat(addItemTo.cookie_oz);
+      await db('manual_order_items','insert',{data:{
+        manual_order_id: editOrder.id,
+        flavor_id: parseInt(addItemTo.flavor_id),
+        quantity: parseInt(addItemTo.quantity),
+        cookie_oz,
+        pack_size: cookie_oz==1?'mini-1oz':cookie_oz==2?'mini-2oz':'standard'
+      }});
+      setAddItemTo({flavor_id:'',quantity:'',cookie_oz:4});
+      // Refresh the open modal
+      const {data} = await db('manual_orders','select',{
+        select:'*, manual_order_items(*)',
+        filters:{id:editOrder.id}
+      });
+      if (data?.[0]) setEditOrder(data[0]);
+      load();
+    } catch(e) { alert('Error adding item: ' + e.message); }
+  };
+
+  // Delete an entire order (with all its items via cascade — or manual cleanup)
+  const deleteWholeOrder = async () => {
+    if (!editOrder) return;
+    if (!confirm(`Delete this order for ${editOrder.customer_name || 'unnamed customer'}? This cannot be undone.`)) return;
+    try {
+      // Delete items first (no cascade defined on the FK)
+      for (const item of (editOrder.manual_order_items || [])) {
+        await db('manual_order_items','delete',{id:item.id});
+      }
+      await db('manual_orders','delete',{id:editOrder.id});
+      setEditOrder(null);
+      load();
+    } catch(e) { alert('Error deleting order: ' + e.message); }
+  };
+
   return (
     <div>
       <div className="card">
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
-          <div><h3>Catering & Wholesale Orders</h3><p className="sub">Manual orders outside Shopify/Clover.</p></div>
+          <div><h3>Catering & Wholesale Orders</h3><p className="sub">Manual orders outside Shopify/Clover. Click any row to view or edit.</p></div>
           <button className="btn btn-blue" onClick={()=>setShowAdd(true)}>+ New Order</button>
         </div>
         {orders.length===0?<p style={{color:'var(--gray)',textAlign:'center',padding:20}}>No orders yet.</p>:(
           <table><thead><tr><th>Customer</th><th>Type</th><th className="c">Cookies</th><th className="c">Due</th><th>Status</th><th></th></tr></thead>
           <tbody>{orders.map(o=>(
-            <tr key={o.id}>
+            <tr key={o.id} className="clickable-row" onClick={()=>setEditOrder({...o, manual_order_items: o.manual_order_items || []})}>
               <td style={{fontWeight:500}}>{o.customer_name||'—'}</td>
               <td><Tag color={o.order_type==='wholesale'?'var(--green)':'var(--orange)'}>{o.order_type.toUpperCase()}</Tag></td>
               <td className="c">{o.manual_order_items?.reduce((s,i)=>s+i.quantity,0)||0}</td>
               <td className="c">{o.fulfillment_date||'—'}</td>
               <td><Tag color={o.status==='fulfilled'?'var(--green)':o.status==='confirmed'?'var(--blue)':'var(--yellow)'}>{o.status?.toUpperCase()}</Tag></td>
-              <td className="c">{o.status==='pending'&&<button className="btn btn-outline" style={{fontSize:10,padding:'3px 8px'}} onClick={()=>updateStatus(o.id,'confirmed')}>Confirm</button>}{o.status==='confirmed'&&<button className="btn btn-outline" style={{fontSize:10,padding:'3px 8px'}} onClick={()=>updateStatus(o.id,'fulfilled')}>Fulfill</button>}</td>
+              <td className="c" onClick={e=>e.stopPropagation()}>
+                {o.status==='pending'&&<button className="btn btn-outline" style={{fontSize:10,padding:'3px 8px'}} onClick={()=>updateStatus(o.id,'confirmed')}>Confirm</button>}
+                {o.status==='confirmed'&&<button className="btn btn-outline" style={{fontSize:10,padding:'3px 8px'}} onClick={()=>updateStatus(o.id,'fulfilled')}>Fulfill</button>}
+              </td>
             </tr>
           ))}</tbody></table>
         )}
       </div>
+
+      {/* New Order modal */}
       {showAdd && (
         <div className="modal-overlay" onClick={()=>setShowAdd(false)}><div className="modal" onClick={e=>e.stopPropagation()}>
           <h3 className="serif" style={{marginBottom:16}}>New Order</h3>
@@ -1411,6 +1510,93 @@ function ManualOrdersTab({flavors}) {
             <div style={{display:'flex',gap:8,marginTop:8}}><button className="btn btn-outline" style={{flex:1}} onClick={()=>setShowAdd(false)}>Cancel</button><button className="btn btn-green" style={{flex:1}} onClick={saveOrder} disabled={!newOrder.items.length}>Save</button></div>
           </div>
         </div></div>
+      )}
+
+      {/* Edit/view existing order modal */}
+      {editOrder && (
+        <div className="modal-overlay" onClick={()=>setEditOrder(null)}>
+          <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:16}}>
+              <h3 className="serif" style={{margin:0}}>Edit Order</h3>
+              <Tag color={editOrder.status==='fulfilled'?'var(--green)':editOrder.status==='confirmed'?'var(--blue)':'var(--yellow)'}>
+                {editOrder.status?.toUpperCase()}
+              </Tag>
+            </div>
+            <div style={{display:'flex',flexDirection:'column',gap:10}}>
+              <label style={{fontSize:11,color:'var(--gray)',textTransform:'uppercase',letterSpacing:'.6px',fontWeight:600}}>Type</label>
+              <select className="select" value={editOrder.order_type||'catering'}
+                onChange={e=>setEditOrder({...editOrder, order_type:e.target.value})}>
+                <option value="catering">Catering</option>
+                <option value="wholesale">Wholesale</option>
+                <option value="wedding">Wedding</option>
+                <option value="event">Event</option>
+              </select>
+
+              <label style={{fontSize:11,color:'var(--gray)',textTransform:'uppercase',letterSpacing:'.6px',fontWeight:600}}>Customer</label>
+              <input className="input-wide" placeholder="Customer name"
+                value={editOrder.customer_name||''}
+                onChange={e=>setEditOrder({...editOrder, customer_name:e.target.value})}/>
+
+              <label style={{fontSize:11,color:'var(--gray)',textTransform:'uppercase',letterSpacing:'.6px',fontWeight:600}}>Fulfillment date</label>
+              <input className="input-wide" type="date"
+                value={editOrder.fulfillment_date||''}
+                onChange={e=>setEditOrder({...editOrder, fulfillment_date:e.target.value})}/>
+
+              <label style={{fontSize:11,color:'var(--gray)',textTransform:'uppercase',letterSpacing:'.6px',fontWeight:600}}>Notes</label>
+              <input className="input-wide" placeholder="Notes"
+                value={editOrder.notes||''}
+                onChange={e=>setEditOrder({...editOrder, notes:e.target.value})}/>
+
+              <div style={{borderTop:'1px solid var(--border)',paddingTop:12,marginTop:6}}>
+                <p style={{fontWeight:600,fontSize:13,marginBottom:8}}>Cookie Items</p>
+                {(editOrder.manual_order_items || []).length === 0 && (
+                  <p style={{fontSize:12,color:'var(--gray)',padding:'6px 0'}}>No items in this order.</p>
+                )}
+                {(editOrder.manual_order_items || []).map(item => {
+                  const flavor = flavors.find(f => f.id === item.flavor_id);
+                  return (
+                    <div key={item.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'6px 0',borderBottom:'1px solid rgba(51,51,51,.3)'}}>
+                      <span style={{color:'#fff',fontSize:13}}>{flavor?.name || `Flavor #${item.flavor_id}`}</span>
+                      <span style={{fontSize:13,color:'var(--gray)'}}>{item.quantity} × {item.cookie_oz}oz</span>
+                      <button className="btn btn-outline" style={{padding:'3px 8px',fontSize:10,color:'var(--red)',borderColor:'var(--red)'}}
+                        onClick={()=>deleteOrderItem(item.id)}>Remove</button>
+                    </div>
+                  );
+                })}
+                <div style={{display:'flex',gap:6,marginTop:10}}>
+                  <select className="select" style={{flex:2}} value={addItemTo.flavor_id}
+                    onChange={e=>setAddItemTo({...addItemTo, flavor_id:e.target.value})}>
+                    <option value="">Add flavor…</option>
+                    {flavors.map(f=><option key={f.id} value={f.id}>{f.name}</option>)}
+                  </select>
+                  <input className="input-wide" style={{flex:1}} type="number" placeholder="Qty"
+                    value={addItemTo.quantity}
+                    onChange={e=>setAddItemTo({...addItemTo, quantity:e.target.value})}/>
+                  <select className="select" style={{flex:1}} value={addItemTo.cookie_oz}
+                    onChange={e=>setAddItemTo({...addItemTo, cookie_oz:e.target.value})}>
+                    <option value="4">4oz</option>
+                    <option value="2">2oz</option>
+                    <option value="1">1oz</option>
+                  </select>
+                  <button className="btn btn-blue" onClick={addItemToOrder}
+                    disabled={!addItemTo.flavor_id || !addItemTo.quantity}
+                    style={{padding:'6px 12px'}}>+</button>
+                </div>
+              </div>
+
+              <div style={{display:'flex',gap:8,marginTop:14,borderTop:'1px solid var(--border)',paddingTop:14}}>
+                <button className="btn btn-outline" style={{color:'var(--red)',borderColor:'var(--red)'}}
+                  onClick={deleteWholeOrder}>
+                  Delete Order
+                </button>
+                <button className="btn btn-outline" style={{flex:1}}
+                  onClick={()=>setEditOrder(null)}>Cancel</button>
+                <button className="btn btn-green" style={{flex:1}}
+                  onClick={saveOrderEdits}>Save Changes</button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -1614,8 +1800,9 @@ function TransfersTab({flavors}) {
 // per (flavor, location, storage) in a Petoskey vs TC side-by-side layout.
 // One query pulls the last 30 days of snapshots, then we pick the most recent
 // per (flavor, location, storage) client-side. Much faster than looping queries.
-function InventoryTab({flavors}) {
+function InventoryTab({flavors, products}) {
   const [inventory, setInventory] = useState({});  // {flavorId: {pet: {fridge, freezer, fridgeAt, freezerAt}, tc: {...}}}
+  const [productInv, setProductInv] = useState({}); // {productId: {pet: {fridge, freezer, fridgeAt, freezerAt, total, totalAt}, tc: {...}}}
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [hideEmpty, setHideEmpty] = useState(false);
@@ -1626,13 +1813,18 @@ function InventoryTab({flavors}) {
       // Pull last 60 days of snapshots in one shot — covers any reasonable
       // gap in counting. Snapshots are small rows so this is fast.
       const cutoff = new Date(Date.now() - 60 * 86400000).toISOString();
-      const {data: snaps} = await db('inventory_snapshots','select',{
-        filters:{created_at:{gte:cutoff}},
-        orderBy:'created_at:desc'
-      });
+      const [{data: snaps}, {data: prodSnaps}] = await Promise.all([
+        db('inventory_snapshots','select',{
+          filters:{created_at:{gte:cutoff}},
+          orderBy:'created_at:desc'
+        }),
+        db('product_snapshots','select',{
+          filters:{created_at:{gte:cutoff}},
+          orderBy:'created_at:desc'
+        })
+      ]);
 
-      // Build {flavorId: {pet: {fridge, freezer, fridgeAt, freezerAt}, tc: {...}}}
-      // Since results come back DESC, the first time we see a key is the latest.
+      // Build flavor inventory map (cookie flavors, with fridge/freezer)
       const inv = {};
       for (const s of (snaps || [])) {
         const fId = s.flavor_id;
@@ -1647,9 +1839,38 @@ function InventoryTab({flavors}) {
         }
       }
       setInventory(inv);
+
+      // Build product inventory map. Some products track storage (buttercream,
+      // cream cheese) — show fridge+freezer. Others (cookie dough, sandwiches)
+      // are single-count — use 'total' slot.
+      const pInv = {};
+      for (const s of (prodSnaps || [])) {
+        const pId = s.product_id;
+        const locKey = s.location_id === 1 ? 'pet' : s.location_id === 2 ? 'tc' : null;
+        if (!locKey) continue;
+        const storage = s.storage || 'fridge';
+        if (!pInv[pId]) pInv[pId] = { pet: {}, tc: {} };
+        const slot = pInv[pId][locKey];
+        // Look up the product to decide if it tracks storage
+        const prod = (products || []).find(p => p.id === pId);
+        if (prod && prod.tracks_storage) {
+          // Fridge/freezer breakdown like cookie bins
+          if (slot[storage] === undefined) {
+            slot[storage] = s.quantity !== null ? Number(s.quantity) : null;
+            slot[storage + 'At'] = s.created_at;
+          }
+        } else {
+          // Single-count: only the most recent snapshot regardless of storage
+          if (slot.total === undefined) {
+            slot.total = s.quantity !== null ? Number(s.quantity) : null;
+            slot.totalAt = s.created_at;
+          }
+        }
+      }
+      setProductInv(pInv);
       setLoading(false);
     })();
-  }, []);
+  }, [products]);
 
   // Format a date as "today / yesterday / Mar 14"
   const fmtWhen = (iso) => {
@@ -1867,6 +2088,146 @@ function InventoryTab({flavors}) {
           );
         })}
       </div>
+
+      {/* Products section: cookie dough, ice cream sandwiches, buttercream bags.
+          Same Petoskey vs TC side-by-side layout, but rendering differs based
+          on whether the product tracks_storage (fridge/freezer split) or not. */}
+      {(products || []).filter(p => p.status === 'live' || !p.status).length > 0 && (() => {
+        const liveProducts = (products || []).filter(p => p.status === 'live' || !p.status);
+        const productTypeMeta = {
+          cookie_dough: { label: 'Cookie Dough', icon: '🍪' },
+          ice_cream_sandwich: { label: 'Ice Cream Sandwiches', icon: '🍨' },
+          buttercream_bag: { label: 'Buttercream & Filling Bags', icon: '🧁' },
+        };
+        // Group products by type, sorted within each by name
+        const grouped = {};
+        for (const p of liveProducts) {
+          if (!grouped[p.product_type]) grouped[p.product_type] = [];
+          grouped[p.product_type].push(p);
+        }
+        for (const k of Object.keys(grouped)) grouped[k].sort((a,b) => a.name.localeCompare(b.name));
+
+        const renderProductRow = (p) => {
+          const inv = productInv[p.id] || { pet: {}, tc: {} };
+          const tracksStorage = p.tracks_storage;
+          // Compute totals based on whether this product tracks storage
+          const petTotal = tracksStorage
+            ? (inv.pet.fridge || 0) + (inv.pet.freezer || 0)
+            : (inv.pet.total || 0);
+          const tcTotal = tracksStorage
+            ? (inv.tc.fridge || 0) + (inv.tc.freezer || 0)
+            : (inv.tc.total || 0);
+          const combined = petTotal + tcTotal;
+          const par = p.par_level ? Number(p.par_level) : 0;
+          const restock = p.restock_trigger ? Number(p.restock_trigger) : 0;
+          const petLatestAt = tracksStorage
+            ? [inv.pet.fridgeAt, inv.pet.freezerAt].filter(Boolean).sort().pop()
+            : inv.pet.totalAt;
+          const tcLatestAt = tracksStorage
+            ? [inv.tc.fridgeAt, inv.tc.freezerAt].filter(Boolean).sort().pop()
+            : inv.tc.totalAt;
+          const unitLabel = p.unit_name + (combined === 1 ? '' : 's');
+
+          // Filter by search
+          if (search && !p.name.toLowerCase().includes(search.toLowerCase())) return null;
+          if (hideEmpty && combined === 0) return null;
+
+          return (
+            <div key={p.id} className="inv-row">
+              <div className="inv-cell-flavor">
+                <div style={{fontWeight:600}}>{p.name}</div>
+                <div style={{fontSize:10,color:'var(--gray)',textTransform:'uppercase',letterSpacing:'.6px',marginTop:2}}>
+                  {unitLabel}{par ? ` · par ${fmtBins(par)}` : ''}
+                </div>
+              </div>
+
+              {/* Petoskey */}
+              <div className={`inv-cell-loc ${combined > 0 && petTotal < restock ? 'inv-low' : ''}`} data-loc="Petoskey">
+                <div className="inv-numbers">
+                  {tracksStorage ? (
+                    <>
+                      <span className="inv-num inv-fridge" title="Fridge">
+                        <span className="inv-num-icon">❄</span> {fmtBins(inv.pet.fridge)}
+                      </span>
+                      <span className="inv-num inv-freezer" title="Freezer">
+                        <span className="inv-num-icon">🧊</span> {fmtBins(inv.pet.freezer)}
+                      </span>
+                      <span className="inv-num inv-total" title="Total">= {fmtBins(petTotal)}</span>
+                    </>
+                  ) : (
+                    <span className="inv-num inv-total" title="Total">{fmtBins(inv.pet.total)}</span>
+                  )}
+                </div>
+                <div className="inv-staleness">
+                  <span className={`stale-dot ${stalenessClass(petLatestAt)}`}/>
+                  <span>last count: {fmtWhen(petLatestAt)}</span>
+                </div>
+              </div>
+
+              {/* Traverse City */}
+              <div className={`inv-cell-loc ${combined > 0 && tcTotal < restock ? 'inv-low' : ''}`} data-loc="Traverse City">
+                <div className="inv-numbers">
+                  {tracksStorage ? (
+                    <>
+                      <span className="inv-num inv-fridge" title="Fridge">
+                        <span className="inv-num-icon">❄</span> {fmtBins(inv.tc.fridge)}
+                      </span>
+                      <span className="inv-num inv-freezer" title="Freezer">
+                        <span className="inv-num-icon">🧊</span> {fmtBins(inv.tc.freezer)}
+                      </span>
+                      <span className="inv-num inv-total" title="Total">= {fmtBins(tcTotal)}</span>
+                    </>
+                  ) : (
+                    <span className="inv-num inv-total" title="Total">{fmtBins(inv.tc.total)}</span>
+                  )}
+                </div>
+                <div className="inv-staleness">
+                  <span className={`stale-dot ${stalenessClass(tcLatestAt)}`}/>
+                  <span>last count: {fmtWhen(tcLatestAt)}</span>
+                </div>
+              </div>
+
+              {/* Combined */}
+              <div className="inv-cell-combined">
+                <div className="inv-combined-num">{fmtBins(combined)}</div>
+                <div className="inv-combined-sub">
+                  {par > 0 && (
+                    <span style={{color: combined >= par ? 'var(--green)' : combined >= restock ? 'var(--yellow)' : 'var(--red)'}}>
+                      {combined >= par ? '✓ at par' : combined >= restock ? 'below par' : 'restock'}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        };
+
+        // Render in fixed type order: cookie_dough, ice_cream_sandwich, buttercream_bag
+        const typeOrder = ['cookie_dough','ice_cream_sandwich','buttercream_bag'];
+        return typeOrder.filter(t => grouped[t]).map(t => {
+          const meta = productTypeMeta[t] || { label: t, icon: '📦' };
+          const rows = grouped[t].map(renderProductRow).filter(Boolean);
+          if (rows.length === 0) return null;
+          return (
+            <div key={t} className="card" style={{padding:0,overflow:'hidden',marginTop:14}}>
+              <div className="inv-product-header">
+                <span style={{fontSize:18}}>{meta.icon}</span> {meta.label}
+              </div>
+              <div className="inv-grid-header">
+                <div className="inv-cell-flavor">Product</div>
+                <div className="inv-cell-loc">
+                  <div className="inv-loc-name">Petoskey</div>
+                </div>
+                <div className="inv-cell-loc">
+                  <div className="inv-loc-name">Traverse City</div>
+                </div>
+                <div className="inv-cell-combined">Combined</div>
+              </div>
+              {rows}
+            </div>
+          );
+        });
+      })()}
     </div>
   );
 }
@@ -2852,7 +3213,7 @@ function App() {
       <main>
         {tab==='dough' && <DoughTab loc={loc} setLoc={setLoc} flavors={flavors} products={products} dashData={dashData} onSaved={loadData}/>}
         {tab==='production' && <ProductionTab dashData={dashData}/>}
-        {tab==='inventory' && <InventoryTab flavors={flavors}/>}
+        {tab==='inventory' && <InventoryTab flavors={flavors} products={products}/>}
         {tab==='prep' && <PrepListTab dashData={dashData}/>}
         {tab==='orders' && <OrdersTab dashData={dashData}/>}
         {tab==='manual' && <ManualOrdersTab flavors={flavors}/>}
