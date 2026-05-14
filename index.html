@@ -90,7 +90,21 @@ td.c{text-align:center}
 .step-btn:hover{background:var(--blue);color:#000}
 .step-btn:active{transform:scale(.95)}
 .step-val{min-width:30px;padding:0 6px;text-align:center;font-size:14px;font-weight:700;color:#fff;font-variant-numeric:tabular-nums}
+.step-val.provisional{color:var(--yellow);font-style:italic;opacity:.7;font-weight:600}
+.provisional-input{border-color:var(--yellow) !important;color:var(--yellow) !important;font-style:italic;opacity:.85}
+.provisional-banner{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;padding:12px 16px;background:rgba(255,179,0,.08);border:1px solid rgba(255,179,0,.25);border-radius:8px;margin-top:10px;font-size:13px;color:#fff;line-height:1.4}
 .step-divider{width:1px;height:24px;background:var(--border);margin:0 4px}
+
+/* Storage rows: fridge and freezer label columns align vertically.
+   The label is a fixed-width column; the buttons live in the second column
+   and wrap WITHIN that column, so they always start at the same X coordinate
+   under fridge and freezer rows. */
+.storage-grid{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.storage-row{display:grid;grid-template-columns:90px 1fr;gap:10px;align-items:center}
+.storage-label{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:800;letter-spacing:.8px;color:#fff;padding:6px 8px;border-radius:6px;background:rgba(162,204,235,.08);border-left:3px solid var(--blue);text-transform:uppercase}
+.storage-fridge{background:rgba(162,204,235,.12);border-left-color:var(--blue);color:#fff}
+.storage-freezer{background:rgba(180,210,240,.08);border-left-color:#7FB3D9;color:#fff}
+.storage-icon{font-size:18px;line-height:1;filter:drop-shadow(0 0 4px rgba(162,204,235,.4))}
 .count-row.counted{background:rgba(76,175,80,.04)}
 .count-row.not-stocked{opacity:.6}
 
@@ -102,7 +116,8 @@ td.c{text-align:center}
 .inv-sum-label{font-size:11px;color:var(--gray);text-transform:uppercase;letter-spacing:.8px;font-weight:600}
 .inv-sum-value{font-size:28px;font-weight:700;color:#fff;margin-top:4px;font-variant-numeric:tabular-nums}
 .inv-sum-unit{font-size:12px;color:var(--gray);font-weight:400}
-.inv-sum-breakdown{display:flex;gap:14px;margin-top:6px;font-size:11px;color:var(--gray)}
+.inv-sum-breakdown{display:flex;gap:14px;margin-top:6px;font-size:12px;color:#ccc;font-weight:600}
+.inv-sum-breakdown .icon{font-size:16px;margin-right:3px}
 .inv-grid-header{display:grid;grid-template-columns:1.4fr 1fr 1fr .6fr;gap:12px;padding:12px 16px;background:var(--bg);border-bottom:1px solid var(--border);font-size:10px;color:var(--gray);text-transform:uppercase;letter-spacing:.8px;font-weight:700}
 .inv-loc-name{color:var(--blue);font-size:12px;letter-spacing:.4px}
 .inv-loc-sub{font-size:9px;color:var(--gray2);margin-top:2px;text-transform:none;letter-spacing:0;font-weight:400}
@@ -112,8 +127,9 @@ td.c{text-align:center}
 .inv-cell-flavor{display:flex;flex-direction:column}
 .inv-cell-loc{display:flex;flex-direction:column;gap:4px;padding:6px 10px;border-radius:6px;background:rgba(0,0,0,.15)}
 .inv-cell-loc.inv-low{background:rgba(239,83,80,.08);border:1px solid rgba(239,83,80,.2)}
-.inv-numbers{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;font-variant-numeric:tabular-nums}
-.inv-num{font-size:13px;font-weight:500;color:#ccc}
+.inv-numbers{display:flex;gap:14px;align-items:baseline;flex-wrap:wrap;font-variant-numeric:tabular-nums}
+.inv-num{font-size:15px;font-weight:700;color:#fff;display:inline-flex;align-items:baseline;gap:5px}
+.inv-num-icon{font-size:18px;line-height:1;filter:drop-shadow(0 0 4px rgba(162,204,235,.4))}
 .inv-fridge{color:#fff}
 .inv-freezer{color:#fff}
 .inv-total{color:var(--blue);font-weight:700;font-size:14px;margin-left:auto}
@@ -283,6 +299,15 @@ function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
   const [prevCounts, setPrevCounts] = useState({});
   const [prevProductCounts, setPrevProductCounts] = useState({}); // {productId: number}
 
+  // Tracks which counts the employee has explicitly touched/confirmed this session.
+  // Shape: {flavorId: {fridge: true, freezer: true}}
+  // Pre-filled values from last night appear in counts (so steppers and presets
+  // start from the right place) but DON'T count as "complete" until the employee
+  // taps a button to confirm. This avoids accidentally saving stale numbers if
+  // a flavor was skipped.
+  const [confirmed, setConfirmed] = useState({});
+  const [productConfirmed, setProductConfirmed] = useState({}); // {productId: true}
+
   // Load employees + previous night's counts + any local draft on mount / loc change
   useEffect(() => {
     (async () => {
@@ -332,7 +357,13 @@ function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
       }
       setPrevProductCounts(prevProd);
 
-      // Restore local draft if present (survives refresh/sleep)
+      // Restore local draft if present (survives refresh/sleep).
+      // If no draft, seed counts from previous night's values as PROVISIONAL —
+      // the values appear in the steppers/presets but aren't "confirmed" until
+      // the employee taps a button (any preset/+/−). This makes the common case
+      // (unchanged inventory) a single confirm-tap instead of many taps to reach
+      // the right number.
+      let restoredFromDraft = false;
       try {
         const raw = localStorage.getItem(storageKey);
         if (raw) {
@@ -342,15 +373,38 @@ function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
           if (ageMs < 18 * 3600000) {
             if (draft.counts) setCounts(draft.counts);
             if (draft.notStocked) setNotStocked(draft.notStocked);
+            if (draft.confirmed) setConfirmed(draft.confirmed);
             if (draft.productCounts) setProductCounts(draft.productCounts);
             if (draft.productNotStocked) setProductNotStocked(draft.productNotStocked);
+            if (draft.productConfirmed) setProductConfirmed(draft.productConfirmed);
             if (draft.countedBy) setCountedBy(draft.countedBy);
             if (draft.notes) setNotes(draft.notes);
+            restoredFromDraft = true;
           } else {
             localStorage.removeItem(storageKey);
           }
         }
       } catch(e) { /* ignore parse errors */ }
+
+      // No draft: seed counts from previous values (provisional, unconfirmed)
+      if (!restoredFromDraft) {
+        const seedCounts = {};
+        for (const fId of Object.keys(prev)) {
+          const p = prev[fId];
+          const entry = {};
+          if (p.fridge !== null && p.fridge !== undefined) entry.fridge = String(p.fridge);
+          if (p.freezer !== null && p.freezer !== undefined) entry.freezer = String(p.freezer);
+          if (Object.keys(entry).length > 0) seedCounts[fId] = entry;
+        }
+        setCounts(seedCounts);
+
+        // Same for products
+        const seedProd = {};
+        for (const pId of Object.keys(prevProd)) {
+          seedProd[pId] = String(prevProd[pId]);
+        }
+        setProductCounts(seedProd);
+      }
     })();
   }, [locId, flavors, products]);
 
@@ -361,10 +415,18 @@ function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
         !countedBy && !notes) return;
     try {
       localStorage.setItem(storageKey, JSON.stringify({
-        counts, notStocked, productCounts, productNotStocked, countedBy, notes, savedAt: Date.now()
+        counts, notStocked, confirmed, productCounts, productNotStocked, productConfirmed, countedBy, notes, savedAt: Date.now()
       }));
     } catch(e) { /* quota or disabled */ }
-  }, [counts, notStocked, productCounts, productNotStocked, countedBy, notes, storageKey]);
+  }, [counts, notStocked, confirmed, productCounts, productNotStocked, productConfirmed, countedBy, notes, storageKey]);
+
+  // Mark a field as confirmed (i.e., employee has touched it this session)
+  const markConfirmed = (fId, storage) => {
+    setConfirmed(cf => ({
+      ...cf,
+      [fId]: { ...(cf[fId] || {}), [storage]: true }
+    }));
+  };
 
   // Set count for a specific storage (fridge or freezer)
   const setCount = (fId, storage, val) => {
@@ -372,6 +434,7 @@ function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
       ...c,
       [fId]: { ...(c[fId] || {}), [storage]: val }
     }));
+    markConfirmed(fId, storage);
     setNotStocked(ns => {
       if (ns[fId]) { const next = {...ns}; delete next[fId]; return next; }
       return ns;
@@ -391,6 +454,7 @@ function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
         [fId]: { ...(c[fId] || {}), [storage]: String(next) }
       };
     });
+    markConfirmed(fId, storage);
     setNotStocked(ns => {
       if (ns[fId]) { const next = {...ns}; delete next[fId]; return next; }
       return ns;
@@ -405,6 +469,9 @@ function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
       return next;
     });
     setCounts(c => { const n = {...c}; delete n[fId]; return n; });
+    // When toggling not-stocked off, the seeded values are gone, so confirmed
+    // state for this flavor is also cleared (no longer relevant).
+    setConfirmed(cf => { const n = {...cf}; delete n[fId]; return n; });
   };
 
   // Get total bins entered for a flavor (fridge + freezer)
@@ -417,14 +484,15 @@ function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
     return (fridge || 0) + (freezer || 0);
   };
 
-  // A flavor is "complete" if Not Stocked OR both fridge AND freezer are filled in
+  // A flavor is "complete" if Not Stocked OR both fridge AND freezer are
+  // confirmed by the employee. Confirmed means they've explicitly touched
+  // a button for that field this session — not just that a value exists
+  // (since values pre-fill from last night's counts).
   const isFlavorComplete = (fId) => {
     if (notStocked[fId]) return true;
-    const c = counts[fId];
-    if (!c) return false;
-    const hasFridge = c.fridge !== undefined && c.fridge !== '';
-    const hasFreezer = c.freezer !== undefined && c.freezer !== '';
-    return hasFridge && hasFreezer;
+    const cf = confirmed[fId];
+    if (!cf) return false;
+    return !!cf.fridge && !!cf.freezer;
   };
 
   // Variance check uses TOTAL bins vs previous TOTAL
@@ -442,14 +510,16 @@ function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
   };
 
   // Product completion + helpers
+  // A product is "complete" if Not Stocked OR has been confirmed by the employee
+  // (i.e. they've touched its input this session, even if the value was pre-filled).
   const isProductComplete = (pId) => {
     if (productNotStocked[pId]) return true;
-    const v = productCounts[pId];
-    return v !== undefined && v !== '';
+    return !!productConfirmed[pId];
   };
 
   const setProductCount = (pId, val) => {
     setProductCounts(c => ({...c, [pId]: val}));
+    setProductConfirmed(pc => ({...pc, [pId]: true}));
     setProductNotStocked(ns => {
       if (ns[pId]) { const next = {...ns}; delete next[pId]; return next; }
       return ns;
@@ -464,6 +534,7 @@ function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
       return next;
     });
     setProductCounts(c => { const n = {...c}; delete n[pId]; return n; });
+    setProductConfirmed(pc => { const n = {...pc}; delete n[pId]; return n; });
   };
 
   // Completion status for save button — must complete BOTH cookies and products
@@ -474,6 +545,41 @@ function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
   const totalItems = totalFlavors + totalProducts;
   const completedItems = completedFlavors + completedProducts;
   const ready = countedBy && completedItems === totalItems;
+
+  // Count items that have pre-filled values but haven't been confirmed yet.
+  // These are the "if nothing changed, just tap to confirm" items.
+  const provisionalFlavors = liveFlavors.filter(f => {
+    if (notStocked[f.id]) return false;
+    if (isFlavorComplete(f.id)) return false;
+    const c = counts[f.id] || {};
+    return (c.fridge !== undefined && c.fridge !== '') || (c.freezer !== undefined && c.freezer !== '');
+  });
+  const provisionalProducts = liveProducts.filter(p => {
+    if (productNotStocked[p.id]) return false;
+    if (isProductComplete(p.id)) return false;
+    return productCounts[p.id] !== undefined && productCounts[p.id] !== '';
+  });
+  const provisionalCount = provisionalFlavors.length + provisionalProducts.length;
+
+  // Confirm all pre-filled values at once — for when the count hasn't changed
+  // since last night. One click vs. tapping every single row.
+  const confirmAllProvisional = () => {
+    setConfirmed(cf => {
+      const next = {...cf};
+      for (const f of provisionalFlavors) {
+        const c = counts[f.id] || {};
+        next[f.id] = {...(next[f.id] || {})};
+        if (c.fridge !== undefined && c.fridge !== '') next[f.id].fridge = true;
+        if (c.freezer !== undefined && c.freezer !== '') next[f.id].freezer = true;
+      }
+      return next;
+    });
+    setProductConfirmed(pc => {
+      const next = {...pc};
+      for (const p of provisionalProducts) next[p.id] = true;
+      return next;
+    });
+  };
 
   const doSave = async () => {
     setSaving(true);
@@ -552,8 +658,10 @@ function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
       localStorage.removeItem(storageKey);
       setCounts({});
       setNotStocked({});
+      setConfirmed({});
       setProductCounts({});
       setProductNotStocked({});
+      setProductConfirmed({});
       setNotes('');
 
       // Check if the other location still needs a count
@@ -603,8 +711,12 @@ function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
     // Helper to render a single preset bank for fridge or freezer.
     // Layout: [−] [value display] [+] | preset buttons | custom
     // The stepper lets employees nudge by 0.25 without typing or using prompts.
+    // Provisional values (pre-filled from last night, not yet confirmed) show
+    // grayed-out / italic so it's obvious they need to be confirmed.
     const presetBank = (storage, value) => {
       const showCustom = value !== '' && !presets.includes(value);
+      const isConfirmed = !!confirmed[f.id]?.[storage];
+      const isProvisional = value !== '' && !isConfirmed;
       const displayVal = value === '' ? '—' :
         value === '0.25' ? '¼' :
         value === '0.5' ? '½' :
@@ -616,7 +728,10 @@ function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
             className="step-btn"
             onClick={()=>stepCount(f.id, storage, -0.25)}
             title="Decrease by ¼ bin">−</button>
-          <span className="step-val" title="Current value">{displayVal}</span>
+          <span className={`step-val ${isProvisional ? 'provisional' : ''}`}
+                title={isProvisional ? 'From last count — tap any button to confirm' : 'Current value'}>
+            {displayVal}
+          </span>
           <button
             className="step-btn"
             onClick={()=>stepCount(f.id, storage, 0.25)}
@@ -624,7 +739,7 @@ function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
           <span className="step-divider"/>
           {presets.map(p => (
             <button key={p}
-              className={`quick-btn ${value===p && !isNS ? 'active' : ''}`}
+              className={`quick-btn ${value===p && isConfirmed && !isNS ? 'active' : ''}`}
               onClick={()=>setCount(f.id, storage, p)}>
               {p === '0.25' ? '¼' : p === '0.5' ? '½' : p === '0.75' ? '¾' : p}
             </button>
@@ -662,16 +777,16 @@ function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
         </div>
 
         {!isNS && (
-          <>
-            <div style={{display:'flex',alignItems:'center',gap:8,marginTop:6,flexWrap:'wrap'}}>
-              <span style={{fontSize:11,color:'var(--gray)',minWidth:60,fontWeight:600,textTransform:'uppercase',letterSpacing:'.6px'}}>❄ Fridge</span>
+          <div className="storage-grid">
+            <div className="storage-row">
+              <span className="storage-label storage-fridge"><span className="storage-icon">❄</span> FRIDGE</span>
               {presetBank('fridge', fridgeVal)}
             </div>
-            <div style={{display:'flex',alignItems:'center',gap:8,marginTop:6,flexWrap:'wrap'}}>
-              <span style={{fontSize:11,color:'var(--gray)',minWidth:60,fontWeight:600,textTransform:'uppercase',letterSpacing:'.6px'}}>🧊 Freezer</span>
+            <div className="storage-row">
+              <span className="storage-label storage-freezer"><span className="storage-icon">🧊</span> FREEZER</span>
               {presetBank('freezer', freezerVal)}
             </div>
-          </>
+          </div>
         )}
 
         <div style={{marginTop:isNS ? 0 : 8}}>
@@ -759,6 +874,19 @@ function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
           </div>
         </div>
 
+        {provisionalCount > 0 && (
+          <div className="provisional-banner">
+            <div>
+              <strong style={{color:'var(--yellow)'}}>{provisionalCount}</strong> item{provisionalCount===1?'':'s'} pre-filled from last count.
+              If the count hasn't changed, tap to confirm. Otherwise adjust with the −/+ buttons or presets.
+            </div>
+            <button className="btn btn-blue" style={{padding:'8px 14px',fontSize:12,whiteSpace:'nowrap'}}
+              onClick={confirmAllProvisional}>
+              ✓ Confirm all unchanged
+            </button>
+          </div>
+        )}
+
         <div style={{display:'flex',gap:10,marginTop:10,marginBottom:4,flexWrap:'wrap'}}>
           <select className="select" style={{flex:1,minWidth:200,maxWidth:300}}
             value={countedBy} onChange={e=>setCountedBy(e.target.value)}>
@@ -795,23 +923,32 @@ function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
           const isNS = !!productNotStocked[p.id];
           const prev = prevProductCounts[p.id];
           const counted = isProductComplete(p.id);
+          const isProvisional = val !== '' && !productConfirmed[p.id] && !isNS;
           return (
             <div key={p.id} className={`count-row ${counted ? 'counted' : ''} ${isNS ? 'not-stocked' : ''}`}>
               <div className="flav-name">
                 {p.name}
                 {prev !== undefined && <span className="prev-count">last: {prev}</span>}
+                {isProvisional && <span className="prev-count" style={{color:'var(--yellow)',fontStyle:'italic'}}>tap to confirm</span>}
               </div>
               {!isNS && (
                 <div style={{display:'flex',alignItems:'center',gap:8,marginTop:6,flexWrap:'wrap',width:'100%'}}>
                   <input
-                    className="input-wide"
+                    className={`input-wide ${isProvisional ? 'provisional-input' : ''}`}
                     style={{maxWidth:140}}
                     type="number" min="0" step="1"
                     placeholder={`# of ${p.unit_name}s`}
                     value={val}
                     onChange={e=>setProductCount(p.id, e.target.value)}
+                    onFocus={()=>{ if (isProvisional) setProductConfirmed(pc => ({...pc, [p.id]: true})); }}
                   />
                   <span style={{fontSize:11,color:'var(--gray)'}}>{p.unit_name}{val==='1'?'':'s'}</span>
+                  {isProvisional && (
+                    <button className="btn btn-blue" style={{padding:'6px 12px',fontSize:11}}
+                      onClick={()=>setProductConfirmed(pc => ({...pc, [p.id]: true}))}>
+                      ✓ Confirm
+                    </button>
+                  )}
                 </div>
               )}
               <div style={{marginTop:isNS ? 0 : 8,width:'100%'}}>
@@ -856,7 +993,9 @@ function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
           <button className="btn btn-outline"
             onClick={()=>{
               if (confirm('Clear all entries for this count?')) {
-                setCounts({}); setNotStocked({}); setProductCounts({}); setProductNotStocked({}); setNotes('');
+                setCounts({}); setNotStocked({}); setConfirmed({});
+                setProductCounts({}); setProductNotStocked({}); setProductConfirmed({});
+                setNotes('');
                 localStorage.removeItem(storageKey);
               }
             }}>Clear</button>
@@ -1598,16 +1737,16 @@ function InventoryTab({flavors}) {
           <div className="inv-sum-label">Petoskey Total</div>
           <div className="inv-sum-value">{fmtBins(petGrand)} <span className="inv-sum-unit">bins</span></div>
           <div className="inv-sum-breakdown">
-            <span>❄ {fmtBins(petGrandFridge)} fridge</span>
-            <span>🧊 {fmtBins(petGrandFreezer)} freezer</span>
+            <span><span className="icon">❄</span>{fmtBins(petGrandFridge)} fridge</span>
+            <span><span className="icon">🧊</span>{fmtBins(petGrandFreezer)} freezer</span>
           </div>
         </div>
         <div className="inv-sum-card">
           <div className="inv-sum-label">Traverse City Total</div>
           <div className="inv-sum-value">{fmtBins(tcGrand)} <span className="inv-sum-unit">bins</span></div>
           <div className="inv-sum-breakdown">
-            <span>❄ {fmtBins(tcGrandFridge)} fridge</span>
-            <span>🧊 {fmtBins(tcGrandFreezer)} freezer</span>
+            <span><span className="icon">❄</span>{fmtBins(tcGrandFridge)} fridge</span>
+            <span><span className="icon">🧊</span>{fmtBins(tcGrandFreezer)} freezer</span>
           </div>
         </div>
         <div className="inv-sum-card inv-sum-card-combined">
@@ -1682,8 +1821,12 @@ function InventoryTab({flavors}) {
               {/* Petoskey */}
               <div className={`inv-cell-loc ${combined > 0 && petTotal < restock ? 'inv-low' : ''}`} data-loc="Petoskey">
                 <div className="inv-numbers">
-                  <span className="inv-num inv-fridge" title="Fridge">❄ {fmtBins(inv.pet.fridge)}</span>
-                  <span className="inv-num inv-freezer" title="Freezer">🧊 {fmtBins(inv.pet.freezer)}</span>
+                  <span className="inv-num inv-fridge" title="Fridge">
+                    <span className="inv-num-icon">❄</span> {fmtBins(inv.pet.fridge)}
+                  </span>
+                  <span className="inv-num inv-freezer" title="Freezer">
+                    <span className="inv-num-icon">🧊</span> {fmtBins(inv.pet.freezer)}
+                  </span>
                   <span className="inv-num inv-total" title="Total">= {fmtBins(petTotal)}</span>
                 </div>
                 <div className="inv-staleness">
@@ -1695,8 +1838,12 @@ function InventoryTab({flavors}) {
               {/* Traverse City */}
               <div className={`inv-cell-loc ${combined > 0 && tcTotal < restock ? 'inv-low' : ''}`} data-loc="Traverse City">
                 <div className="inv-numbers">
-                  <span className="inv-num inv-fridge" title="Fridge">❄ {fmtBins(inv.tc.fridge)}</span>
-                  <span className="inv-num inv-freezer" title="Freezer">🧊 {fmtBins(inv.tc.freezer)}</span>
+                  <span className="inv-num inv-fridge" title="Fridge">
+                    <span className="inv-num-icon">❄</span> {fmtBins(inv.tc.fridge)}
+                  </span>
+                  <span className="inv-num inv-freezer" title="Freezer">
+                    <span className="inv-num-icon">🧊</span> {fmtBins(inv.tc.freezer)}
+                  </span>
                   <span className="inv-num inv-total" title="Total">= {fmtBins(tcTotal)}</span>
                 </div>
                 <div className="inv-staleness">
