@@ -97,6 +97,21 @@ td.c{text-align:center}
 .provisional-banner{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;padding:12px 16px;background:rgba(162,204,235,.08);border:1px solid rgba(162,204,235,.25);border-radius:8px;margin-top:10px;font-size:13px;color:#fff;line-height:1.4}
 .step-divider{width:1px;height:24px;background:var(--border);margin:0 4px}
 
+/* Log Production: per-flavor batch entry rows. One row per cookie flavor,
+   with the flavor name on the left and a [−] N [+] stepper on the right.
+   Rows highlight subtly when they have a non-zero batch count to give the
+   manager a visual scan of what's queued to save. */
+.batch-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px;border-bottom:1px solid rgba(255,255,255,.04);transition:background .12s}
+.batch-row:last-child{border-bottom:none}
+.batch-row:hover{background:rgba(162,204,235,.03)}
+.batch-row.has-value{background:rgba(76,175,80,.06);border-left:3px solid var(--green)}
+.batch-flavor{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
+.batch-flavor-name{font-weight:600;color:#fff;font-size:14px}
+.batch-flavor-type{font-size:10px;color:var(--gray);text-transform:uppercase;letter-spacing:.6px}
+.batch-controls{display:flex;align-items:center;gap:6px;flex-shrink:0}
+.batch-val{min-width:32px;padding:0 8px;text-align:center;font-size:16px;font-weight:700;color:var(--gray);font-variant-numeric:tabular-nums}
+.batch-val.active{color:var(--green);font-size:18px}
+
 /* Storage rows: fridge and freezer label columns align vertically.
    The label is a fixed-width column; the buttons live in the second column
    and wrap WITHIN that column, so they always start at the same X coordinate
@@ -1648,164 +1663,358 @@ function ManualOrdersTab({flavors}) {
   );
 }
 
-// ─── LOG PRODUCTION ─────────────────
+// ─── LOG PRODUCTION (dough only) ────────────────────────────────────────────
+// Single-purpose tab for logging cookie dough batches made.
+// Each save calls /api/production which:
+//   1) Writes one production_logs row per flavor
+//   2) Atomically deducts ingredients from pantry based on recipes
+//      (handles base doughs + sub-recipes + flavor-specific add-ons)
+// Full batches only — JoJo's doesn't do half batches.
+// Cookie dough containers and ice cream sandwiches are NOT logged here;
+// they're tracked via nightly count only (per Colin's operational model).
 function LogProductionTab({flavors, products}) {
-  const [mode, setMode] = useState('cookies'); // 'cookies' | 'dough'
   const [logs, setLogs] = useState([]);
-  const [doughLogs, setDoughLogs] = useState([]);
-  const [flavor, setFlavor] = useState('');
-  const [batches, setBatches] = useState('1');
-  const [note, setNote] = useState('');
+  const [employees, setEmployees] = useState([]);
 
-  // Cookie dough state
-  const [doughProduct, setDoughProduct] = useState('');
-  const [doughFraction, setDoughFraction] = useState('half'); // 'half' | 'quarter'
-  const [doughLoc, setDoughLoc] = useState('1');
-  const [doughNote, setDoughNote] = useState('');
-  const [yieldPreview, setYieldPreview] = useState(null);
-  const [savingDough, setSavingDough] = useState(false);
-  const [doughMsg, setDoughMsg] = useState('');
+  // Session state — multi-flavor batch entry
+  const [sessionBatches, setSessionBatches] = useState({}); // {flavorId: batchCount}
+  const [sessionLoc, setSessionLoc] = useState('1');
+  const [sessionBaker, setSessionBaker] = useState('');
 
-  const cookieDoughProducts = (products || []).filter(p => p.product_type === 'cookie_dough' && p.status === 'live');
+  // Preview state (ingredient deduction preview before saving)
+  const [preview, setPreview] = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  // Save state
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState('');
+  const [lastResult, setLastResult] = useState(null); // Shown after a successful save
+
+  const liveFlavors = (flavors || []).filter(f => f.status === 'live' || !f.status);
 
   const load = () => {
-    db('production_logs','select',{orderBy:'date:desc',limit:20}).then(d=>setLogs(d.data||[]));
-    db('product_production_logs','select',{orderBy:'date:desc',limit:20}).then(d=>setDoughLogs(d.data||[]));
+    db('production_logs','select',{orderBy:'date:desc',limit:30}).then(d=>setLogs(d.data||[]));
+    db('employees','select',{filters:{active:true},orderBy:'name'}).then(d=>setEmployees(d.data||[]));
   };
   useEffect(() => { load(); }, []);
 
-  const logProd = async () => {
-    if (!flavor) return;
-    await db('production_logs','insert',{data:{flavor_id:parseInt(flavor), batches:parseFloat(batches), date:new Date().toISOString().split('T')[0], location_id:1, logged_by:'manager', notes:note}});
-    setFlavor(''); setBatches('1'); setNote(''); load();
+  // Step a flavor's batch count by `delta`. Floor at 0; full batches only.
+  const stepBatches = (fId, delta) => {
+    setSessionBatches(s => {
+      const cur = Number(s[fId] || 0);
+      const next = Math.max(0, cur + delta);
+      const out = {...s};
+      if (next === 0) delete out[fId];
+      else out[fId] = next;
+      return out;
+    });
+    setPreview(null); // Invalidate preview when changes happen
   };
 
-  // Calculate yield for selected cookie dough + fraction
-  useEffect(() => {
-    (async () => {
-      if (!doughProduct) { setYieldPreview(null); return; }
-      const p = cookieDoughProducts.find(x => x.id === parseInt(doughProduct));
-      if (!p || !p.grams_per_unit) { setYieldPreview(null); return; }
-      // Sum half_batch_grams from product_ingredients
-      const {data: ings} = await db('product_ingredients','select',{filters:{product_id:p.id}});
-      const halfTotal = (ings || []).reduce((s, i) => s + Number(i.half_batch_grams), 0);
-      const totalGrams = doughFraction === 'half' ? halfTotal : halfTotal / 2;
-      const containers = Math.floor(totalGrams / p.grams_per_unit);
-      setYieldPreview({ totalGrams, containers });
-    })();
-  }, [doughProduct, doughFraction]);
+  const clearSession = () => {
+    if (Object.keys(sessionBatches).length === 0) return;
+    if (!confirm('Clear all unsaved batch entries?')) return;
+    setSessionBatches({});
+    setPreview(null);
+  };
 
-  const logDough = async () => {
-    if (!doughProduct || !yieldPreview) return;
-    setSavingDough(true);
-    setDoughMsg('');
+  // Derived values
+  const totalSessionBatches = Object.values(sessionBatches).reduce((s,v) => s+Number(v), 0);
+  const sessionFlavorCount = Object.keys(sessionBatches).length;
+  const locName = sessionLoc === '1' ? 'Petoskey' : 'Traverse City';
+
+  // Build the batches payload for the API
+  const buildBatchesPayload = () => Object.entries(sessionBatches)
+    .filter(([_, n]) => n > 0)
+    .map(([flavor_id, batch_count]) => ({ flavor_id: parseInt(flavor_id), batch_count: Number(batch_count) }));
+
+  // Preview what would get deducted from pantry — dry run, doesn't write
+  const fetchPreview = async () => {
+    const batches = buildBatchesPayload();
+    if (batches.length === 0) return;
+    setPreviewLoading(true);
+    setSaveMsg('');
     try {
-      await db('product_production_logs','insert',{data:{
-        product_id: parseInt(doughProduct),
-        date: new Date().toISOString().split('T')[0],
-        batch_fraction: doughFraction,
-        quantity_made: yieldPreview.containers,
-        location_id: parseInt(doughLoc),
-        logged_by: 'manager',
-        notes: doughNote || null
-      }});
-      setDoughMsg(`✓ Logged ${yieldPreview.containers} containers`);
-      setTimeout(()=>setDoughMsg(''), 4000);
-      setDoughProduct(''); setDoughNote(''); setYieldPreview(null);
-      load();
+      const result = await api('production', { batches, dryRun: true });
+      setPreview(result);
     } catch(e) {
-      setDoughMsg('Error: ' + e.message);
+      setSaveMsg('Preview failed: ' + e.message);
     }
-    setSavingDough(false);
+    setPreviewLoading(false);
+  };
+
+  // Actually save: writes production_logs AND deducts from pantry
+  const saveSession = async () => {
+    const batches = buildBatchesPayload();
+    if (batches.length === 0) return;
+    if (!sessionBaker) { setSaveMsg('Pick who baked first.'); return; }
+    if (!sessionLoc) { setSaveMsg('Pick a location first.'); return; }
+    setSaving(true);
+    setSaveMsg('');
+    try {
+      const result = await api('production', {
+        batches,
+        location_id: parseInt(sessionLoc),
+        logged_by: sessionBaker
+      });
+      setLastResult(result);
+      setSaveMsg(`✓ Logged ${result.totalBatches} batch${result.totalBatches===1?'':'es'} — pantry updated for ${result.ingredients.length} ingredient${result.ingredients.length===1?'':'s'}.`);
+      setSessionBatches({});
+      setPreview(null);
+      load();
+      setTimeout(()=>setSaveMsg(''), 6000);
+    } catch(e) {
+      setSaveMsg('Error: ' + e.message);
+    }
+    setSaving(false);
+  };
+
+  // Group recent logs by date
+  const today = new Date().toISOString().split('T')[0];
+  const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+  const logsByDate = { today: [], yesterday: [], earlier: [] };
+  for (const l of logs) {
+    if (l.date === today) logsByDate.today.push(l);
+    else if (l.date === yesterday) logsByDate.yesterday.push(l);
+    else logsByDate.earlier.push(l);
+  }
+
+  // Helper: format a batch quantity nicely (1, 2, 3...)
+  const fmtQty = (n, unit) => `${n} ${unit}${n===1?'':'s'}`;
+
+  // ── Per-flavor row ─────────────────────────────────────────────────────
+  const renderFlavorRow = (f) => {
+    const batches = sessionBatches[f.id] || 0;
+    const hasValue = batches > 0;
+    return (
+      <div key={f.id} className={`batch-row ${hasValue ? 'has-value' : ''}`}>
+        <div className="batch-flavor">
+          <span className="batch-flavor-name">{f.name}</span>
+          <span className="batch-flavor-type">{f.type}</span>
+        </div>
+        <div className="batch-controls">
+          <button className="step-btn"
+            onClick={()=>stepBatches(f.id, -1)}
+            disabled={batches === 0}
+            title="−1 batch">−</button>
+          <span className={`batch-val ${hasValue ? 'active' : ''}`}>{batches}</span>
+          <button className="step-btn"
+            onClick={()=>stepBatches(f.id, 1)}
+            title="+1 batch">+</button>
+        </div>
+      </div>
+    );
   };
 
   return (
     <div>
-      {/* Mode toggle */}
-      <div className="tab-pills">
-        <button className={mode==='cookies'?'active':''} onClick={()=>setMode('cookies')}>Cookie Bins</button>
-        <button className={mode==='dough'?'active':''} onClick={()=>setMode('dough')}>Cookie Dough</button>
+      {/* Session header: location + baker + grand total */}
+      <div className="card">
+        <h3>Log Cookie Dough Batches</h3>
+        <p className="sub">Tap +/− on each flavor as you make full batches. Hit save when done — ingredients will be deducted from your pantry automatically.</p>
+
+        <div style={{display:'flex',gap:10,marginTop:14,flexWrap:'wrap',alignItems:'center'}}>
+          <div style={{display:'flex',gap:0,border:'1px solid var(--border)',borderRadius:8,overflow:'hidden'}}>
+            <button
+              className={`btn ${sessionLoc==='1'?'btn-blue':'btn-outline'}`}
+              style={{borderRadius:0,padding:'8px 16px',fontSize:13,border:'none'}}
+              onClick={()=>setSessionLoc('1')}>Petoskey</button>
+            <button
+              className={`btn ${sessionLoc==='2'?'btn-blue':'btn-outline'}`}
+              style={{borderRadius:0,padding:'8px 16px',fontSize:13,border:'none',borderLeft:'1px solid var(--border)'}}
+              onClick={()=>setSessionLoc('2')}>Traverse City</button>
+          </div>
+          <select className="select" style={{flex:'1 1 200px',maxWidth:280}}
+            value={sessionBaker} onChange={e=>setSessionBaker(e.target.value)}>
+            <option value="">Baker / logged by...</option>
+            {employees.map(e=><option key={e.id} value={e.name}>{e.name}</option>)}
+          </select>
+          <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:8}}>
+            <span style={{fontSize:12,color:'var(--gray)'}}>Session:</span>
+            <span style={{fontSize:18,fontWeight:700,color:totalSessionBatches > 0 ? 'var(--green)' : 'var(--gray)'}}>
+              {totalSessionBatches} batch{totalSessionBatches===1?'':'es'}
+            </span>
+            {sessionFlavorCount > 0 && <span style={{fontSize:11,color:'var(--gray)'}}>· {sessionFlavorCount} flavor{sessionFlavorCount===1?'':'s'}</span>}
+          </div>
+        </div>
       </div>
 
-      {mode === 'cookies' && <>
-        <div className="card"><h3>Log Dough Production (Cookies)</h3><p className="sub">Record cookie dough batches made. All production at Petoskey.</p>
-          <div style={{display:'flex',gap:8,marginTop:12,flexWrap:'wrap'}}>
-            <select className="select" style={{flex:2}} value={flavor} onChange={e=>setFlavor(e.target.value)}><option value="">Select flavor</option>{flavors.map(f=><option key={f.id} value={f.id}>{f.name}</option>)}</select>
-            <input className="input-wide" style={{flex:1,minWidth:80}} type="number" step="0.5" min="0.5" placeholder="Batches" value={batches} onChange={e=>setBatches(e.target.value)}/>
-            <input className="input-wide" style={{flex:2}} placeholder="Notes (optional)" value={note} onChange={e=>setNote(e.target.value)}/>
-            <button className="btn btn-green" onClick={logProd}>Log</button>
-          </div>
-        </div>
-        <div className="card"><h3>Recent Cookie Production</h3>
-          {logs.length===0?<p style={{color:'var(--gray)',padding:20,textAlign:'center'}}>No production logged yet.</p>:(
-            <table style={{marginTop:10}}><thead><tr><th>Date</th><th>Flavor</th><th className="c">Batches</th><th>Notes</th></tr></thead>
-            <tbody>{logs.map(l=><tr key={l.id}><td>{l.date}</td><td style={{fontWeight:500}}>{flavors.find(f=>f.id===l.flavor_id)?.name||'?'}</td><td className="c" style={{fontWeight:700}}>{l.batches}</td><td style={{color:'var(--gray)',fontSize:12}}>{l.notes||'—'}</td></tr>)}</tbody></table>
+      {/* Per-flavor batch rows */}
+      <div className="card" style={{padding:0,overflow:'hidden'}}>
+        <div style={{padding:'10px 14px',borderBottom:'1px solid var(--border)',fontSize:11,color:'var(--gray)',textTransform:'uppercase',letterSpacing:'.6px',fontWeight:700,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <span>Flavors · {liveFlavors.length} live</span>
+          {sessionFlavorCount > 0 && (
+            <button className="btn btn-outline" style={{padding:'4px 10px',fontSize:10}}
+              onClick={clearSession}>Clear</button>
           )}
         </div>
-      </>}
+        <div>{liveFlavors.map(renderFlavorRow)}</div>
+      </div>
 
-      {mode === 'dough' && <>
-        <div className="card">
-          <h3>Log Cookie Dough Production</h3>
-          <p className="sub">Pick flavor + batch size. System calculates containers automatically.</p>
-          <div style={{display:'flex',flexDirection:'column',gap:10,marginTop:12}}>
-            <select className="select" value={doughProduct} onChange={e=>setDoughProduct(e.target.value)}>
-              <option value="">Select cookie dough flavor</option>
-              {cookieDoughProducts.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
-            <div style={{display:'flex',gap:8}}>
-              <button
-                className={`btn ${doughFraction==='quarter'?'btn-blue':'btn-outline'}`}
-                style={{flex:1,padding:'12px'}}
-                onClick={()=>setDoughFraction('quarter')}>¼ Batch</button>
-              <button
-                className={`btn ${doughFraction==='half'?'btn-blue':'btn-outline'}`}
-                style={{flex:1,padding:'12px'}}
-                onClick={()=>setDoughFraction('half')}>½ Batch</button>
+      {/* Ingredient preview (dry-run result) */}
+      {preview && preview.ingredients && preview.ingredients.length > 0 && (
+        <div className="card" style={{marginTop:10,borderLeft:'3px solid var(--blue)'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <h3 style={{margin:0}}>📦 Pantry Impact Preview</h3>
+            <span style={{fontSize:11,color:'var(--gray)'}}>{preview.ingredients.length} ingredient{preview.ingredients.length===1?'':'s'} affected</span>
+          </div>
+          <p className="sub" style={{marginTop:4}}>This is what will be deducted from pantry when you save.</p>
+          <table style={{marginTop:10}}>
+            <thead><tr>
+              <th>Ingredient</th>
+              <th className="c">Used</th>
+              <th className="c">On Hand → After</th>
+              <th>Status</th>
+            </tr></thead>
+            <tbody>
+              {preview.ingredients.map(ing => (
+                <tr key={ing.ingredient_id}>
+                  <td style={{fontWeight:500}}>{ing.name}</td>
+                  <td className="c" style={{fontFamily:'monospace',fontWeight:600}}>
+                    {ing.order_units_used} {ing.order_unit}{ing.order_units_used===1?'':'s'}
+                    <div style={{fontSize:10,color:'var(--gray)'}}>({ing.grams_used.toLocaleString()}g)</div>
+                  </td>
+                  <td className="c" style={{fontFamily:'monospace'}}>
+                    <span style={{color:'var(--gray)'}}>{ing.on_hand_before}</span>
+                    {' → '}
+                    <span style={{fontWeight:700,color:ing.would_go_negative?'var(--red)':ing.below_par_after?'var(--yellow)':'#fff'}}>
+                      {ing.on_hand_after}
+                    </span>
+                  </td>
+                  <td>
+                    {ing.would_go_negative ? (
+                      <span style={{color:'var(--red)',fontSize:11,fontWeight:600}}>⚠ NEGATIVE — pantry count may be off</span>
+                    ) : ing.below_par_after ? (
+                      <span style={{color:'var(--yellow)',fontSize:11,fontWeight:600}}>Below par</span>
+                    ) : ing.on_hand_after < 1 ? (
+                      <span style={{color:'var(--red)',fontSize:11,fontWeight:600}}>Almost out</span>
+                    ) : (
+                      <span style={{color:'var(--green)',fontSize:11}}>✓</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {preview.skipped && preview.skipped.length > 0 && (
+            <div style={{marginTop:10,padding:10,background:'rgba(255,179,0,.06)',borderRadius:6,fontSize:11,color:'var(--gray)'}}>
+              <strong style={{color:'var(--yellow)'}}>Note:</strong> {preview.skipped.length} ingredient{preview.skipped.length===1?'':'s'} could not be tracked
+              ({preview.skipped.map(s=>s.name||`ID ${s.ingredient_id}`).join(', ')}).
+              Set their order unit and grams-per-unit in Settings → Pantry to enable tracking.
             </div>
-            {yieldPreview && (
-              <div style={{background:'var(--bg)',padding:12,borderRadius:8,borderLeft:'3px solid var(--green)'}}>
-                <div style={{fontSize:13,color:'var(--gray)'}}>Projected yield:</div>
-                <div className="serif" style={{fontSize:22,fontWeight:700,color:'var(--green)'}}>~{yieldPreview.containers} containers</div>
-                <div style={{fontSize:11,color:'var(--gray)',marginTop:2}}>
-                  ({yieldPreview.totalGrams.toLocaleString()}g ÷ 198.4g/container)
-                </div>
+          )}
+        </div>
+      )}
+
+      {/* Sticky save bar */}
+      <div className="card" style={{position:'sticky',bottom:10,zIndex:5,marginTop:10,padding:'12px 16px'}}>
+        {saveMsg && (
+          <div style={{padding:'8px 12px',marginBottom:10,borderRadius:6,
+            background: saveMsg.startsWith('✓') ? 'rgba(76,175,80,.12)' : 'rgba(239,83,80,.12)',
+            color: saveMsg.startsWith('✓') ? 'var(--green)' : 'var(--red)',
+            fontSize:13,fontWeight:500}}>
+            {saveMsg}
+          </div>
+        )}
+        <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
+          <button
+            className="btn btn-outline"
+            style={{flex:'1 1 180px',padding:'12px',fontSize:13}}
+            onClick={fetchPreview}
+            disabled={previewLoading || saving || totalSessionBatches === 0}>
+            {previewLoading ? 'Calculating…' : preview ? '↻ Refresh Preview' : 'Preview Pantry Impact'}
+          </button>
+          <button
+            className="btn btn-green"
+            style={{flex:'2 1 240px',padding:'12px',fontSize:15}}
+            onClick={saveSession}
+            disabled={saving || totalSessionBatches === 0 || !sessionBaker}>
+            {saving
+              ? 'Saving…'
+              : totalSessionBatches === 0
+                ? 'Add batches to flavors above'
+                : !sessionBaker
+                  ? 'Pick baker to enable save'
+                  : `✓ Save · ${totalSessionBatches} batch${totalSessionBatches===1?'':'es'} at ${locName}`}
+          </button>
+        </div>
+        <p style={{fontSize:11,color:'var(--gray)',marginTop:8,marginBottom:0,textAlign:'center'}}>
+          Saving will deduct ingredients from pantry. Reconcile with a manual pantry count periodically.
+        </p>
+      </div>
+
+      {/* Last save result — shown briefly after a successful save */}
+      {lastResult && lastResult.ingredients && lastResult.ingredients.length > 0 && saveMsg.startsWith('✓') && (
+        <div className="card" style={{marginTop:10,borderLeft:'3px solid var(--green)'}}>
+          <h3>Just Logged</h3>
+          <p className="sub">{lastResult.totalBatches} batch{lastResult.totalBatches===1?'':'es'} saved. Pantry updated:</p>
+          <table style={{marginTop:8}}>
+            <thead><tr><th>Ingredient</th><th className="c">Used</th><th className="c">New On Hand</th></tr></thead>
+            <tbody>
+              {lastResult.ingredients.slice(0, 8).map(ing => (
+                <tr key={ing.ingredient_id}>
+                  <td style={{fontWeight:500}}>{ing.name}</td>
+                  <td className="c" style={{fontSize:12}}>{ing.order_units_used} {ing.order_unit}{ing.order_units_used===1?'':'s'}</td>
+                  <td className="c" style={{fontFamily:'monospace',fontWeight:700,color:ing.below_par_after?'var(--yellow)':'#fff'}}>{ing.on_hand_after}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {lastResult.ingredients.length > 8 && (
+            <p style={{fontSize:11,color:'var(--gray)',marginTop:6}}>… and {lastResult.ingredients.length - 8} more.</p>
+          )}
+        </div>
+      )}
+
+      {/* Recent production grouped by date */}
+      <div className="card" style={{marginTop:14}}>
+        <h3>Recent Production</h3>
+        {logs.length===0?<p style={{color:'var(--gray)',padding:20,textAlign:'center'}}>No production logged yet.</p>:(
+          <>
+            {logsByDate.today.length > 0 && (
+              <div style={{marginTop:10}}>
+                <div style={{fontSize:11,fontWeight:700,color:'var(--green)',textTransform:'uppercase',letterSpacing:'.8px',marginBottom:6}}>Today</div>
+                <table><thead><tr><th>Flavor</th><th className="c">Batches</th><th>Loc</th><th>By</th></tr></thead>
+                <tbody>{logsByDate.today.map(l=>(
+                  <tr key={l.id}>
+                    <td style={{fontWeight:500}}>{flavors.find(f=>f.id===l.flavor_id)?.name||'?'}</td>
+                    <td className="c" style={{fontWeight:700}}>{l.batches}</td>
+                    <td style={{fontSize:12,color:'var(--gray)'}}>{l.location_id===1?'Pet':'TC'}</td>
+                    <td style={{fontSize:12,color:'var(--gray)'}}>{l.logged_by||'—'}</td>
+                  </tr>
+                ))}</tbody></table>
               </div>
             )}
-            <select className="select" value={doughLoc} onChange={e=>setDoughLoc(e.target.value)}>
-              <option value="1">Petoskey</option>
-              <option value="2">Traverse City</option>
-            </select>
-            <input className="input-wide" placeholder="Notes (optional)" value={doughNote} onChange={e=>setDoughNote(e.target.value)}/>
-            <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
-              <button className="btn btn-green" style={{flex:1,padding:'10px',maxWidth:300}}
-                onClick={logDough}
-                disabled={!doughProduct || !yieldPreview || savingDough}>
-                {savingDough ? 'Logging...' : `Log ${doughFraction==='half'?'½':'¼'} Batch`}
-              </button>
-              {doughMsg && <span style={{color:doughMsg.startsWith('✓')?'var(--green)':'var(--red)',fontSize:13,fontWeight:600}}>{doughMsg}</span>}
-            </div>
-          </div>
-        </div>
-        <div className="card">
-          <h3>Recent Cookie Dough Production</h3>
-          {doughLogs.length===0?<p style={{color:'var(--gray)',padding:20,textAlign:'center'}}>No cookie dough logged yet.</p>:(
-            <table style={{marginTop:10}}>
-              <thead><tr><th>Date</th><th>Product</th><th className="c">Batch</th><th className="c">Containers</th><th>Notes</th></tr></thead>
-              <tbody>{doughLogs.map(l=>{
-                const p = cookieDoughProducts.find(p=>p.id===l.product_id);
-                return <tr key={l.id}>
-                  <td>{l.date}</td>
-                  <td style={{fontWeight:500}}>{p?p.name:'?'}</td>
-                  <td className="c">{l.batch_fraction==='half'?'½':l.batch_fraction==='quarter'?'¼':l.batch_fraction}</td>
-                  <td className="c" style={{fontWeight:700,color:'var(--green)'}}>{l.quantity_made}</td>
-                  <td style={{color:'var(--gray)',fontSize:12}}>{l.notes||'—'}</td>
-                </tr>;
-              })}</tbody>
-            </table>
-          )}
-        </div>
-      </>}
+            {logsByDate.yesterday.length > 0 && (
+              <div style={{marginTop:14}}>
+                <div style={{fontSize:11,fontWeight:700,color:'var(--gray)',textTransform:'uppercase',letterSpacing:'.8px',marginBottom:6}}>Yesterday</div>
+                <table><tbody>{logsByDate.yesterday.map(l=>(
+                  <tr key={l.id}>
+                    <td style={{fontWeight:500}}>{flavors.find(f=>f.id===l.flavor_id)?.name||'?'}</td>
+                    <td className="c" style={{fontWeight:700}}>{l.batches}</td>
+                    <td style={{fontSize:12,color:'var(--gray)'}}>{l.location_id===1?'Pet':'TC'}</td>
+                    <td style={{fontSize:12,color:'var(--gray)'}}>{l.logged_by||'—'}</td>
+                  </tr>
+                ))}</tbody></table>
+              </div>
+            )}
+            {logsByDate.earlier.length > 0 && (
+              <div style={{marginTop:14}}>
+                <div style={{fontSize:11,fontWeight:700,color:'var(--gray)',textTransform:'uppercase',letterSpacing:'.8px',marginBottom:6}}>Earlier</div>
+                <table><thead><tr><th>Date</th><th>Flavor</th><th className="c">Batches</th><th>Loc</th></tr></thead>
+                <tbody>{logsByDate.earlier.map(l=>(
+                  <tr key={l.id}>
+                    <td style={{fontSize:12,color:'var(--gray)'}}>{l.date}</td>
+                    <td style={{fontWeight:500}}>{flavors.find(f=>f.id===l.flavor_id)?.name||'?'}</td>
+                    <td className="c" style={{fontWeight:700}}>{l.batches}</td>
+                    <td style={{fontSize:12,color:'var(--gray)'}}>{l.location_id===1?'Pet':'TC'}</td>
+                  </tr>
+                ))}</tbody></table>
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }
