@@ -397,12 +397,21 @@ module.exports = async (req, res) => {
       velocity[f.id] = vel;
     }
 
-    // Upcoming manual orders in projection window
+    // Upcoming manual orders in projection window.
+    // Filter:
+    //   - status pending or confirmed (not completed/cancelled)
+    //   - fulfillment date today through windowEnd (no past-due orders)
+    //   - has a fulfillment_date (skip drafts with no date set)
+    // Past-due orders should be marked completed/cancelled by the manager, not
+    // counted as upcoming demand against future production.
+    const todayStr = new Date().toISOString().split('T')[0];
     const windowEnd = new Date(Date.now() + projectionDays * 86400000).toISOString().split('T')[0];
     const { data: manualOrders } = await supabase
       .from('manual_orders')
       .select('*, manual_order_items(*)')
       .in('status', ['pending', 'confirmed'])
+      .not('fulfillment_date', 'is', null)
+      .gte('fulfillment_date', todayStr)
       .lte('fulfillment_date', windowEnd)
       .order('fulfillment_date');
 
@@ -422,6 +431,10 @@ module.exports = async (req, res) => {
     const productionPlan = [];
     for (const invItem of inventoryArr) {
       const f = invItem.flavor;
+      // Skip pre_production flavors — these are 'coming soon', not yet
+      // selling, so they shouldn't be in the bake-this-week list. They still
+      // show in Settings under their lifecycle but don't pollute the prep list.
+      if (f.status === 'pre_production') continue;
       const vel = velocity[f.id] || { total: 0, petoskey: 0, tc: 0, reliable: false };
       const binCap = f.bin_capacity_cookies || 80;
       const batchSize = f.batch_size_cookies || 0;
