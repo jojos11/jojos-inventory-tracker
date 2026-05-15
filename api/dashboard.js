@@ -10,9 +10,10 @@ function hoursBetween(a, b) {
   return Math.abs(tb - ta) / 3600000;
 }
 
-// Always project 14 days forward — covers Tue order → Wed truck → Wed-Sun prep →
-// Mon-Tue dough → serves next week. This is the full production cycle window.
-function getProjectionDays() { return 14; }
+// Project 7 days forward. Colin makes dough Mon/Tue every week, so the plan
+// only needs to cover one week of sales until the next production cycle.
+// (Old behavior was 14 days, which double-counted demand and inflated batches.)
+function getProjectionDays() { return 7; }
 
 function cookiesToBins(cookies, binCapacity) {
   return binCapacity > 0 ? cookies / binCapacity : 0;
@@ -405,7 +406,19 @@ module.exports = async (req, res) => {
       .lte('fulfillment_date', windowEnd)
       .order('fulfillment_date');
 
-    // Production plan per flavor
+    // What week of the month is it? (used for specialty campaign logic)
+    // Week 1 = days 1-7, week 2 = 8-14, week 3 = 15-21, week 4 = 22+.
+    const today = new Date();
+    const dayOfMonth = today.getDate();
+    const weekOfMonth = Math.min(4, Math.ceil(dayOfMonth / 7));
+
+    // Production plan per flavor — two-track model:
+    //   CLASSICS + EXTRAS: weekly replenishment.
+    //     need = par + this_week_demand − current  → ceil to batches
+    //   SPECIALTIES: monthly campaign.
+    //     Week 1: make to 7-8 bins target
+    //     Weeks 2-3: only bake if ≤ 2 bins, refill to 5-6
+    //     Week 4: 0 batches, let it sell down
     const productionPlan = [];
     for (const invItem of inventoryArr) {
       const f = invItem.flavor;
@@ -413,37 +426,91 @@ module.exports = async (req, res) => {
       const binCap = f.bin_capacity_cookies || 80;
       const batchSize = f.batch_size_cookies || 0;
       const binsPerBatch = batchSize > 0 ? batchSize / binCap : 0;
-      // par_level_bins is per-location target; we want both locations at par
-      const parTotal = (Number(f.par_level_bins) || 6) * 2;
+      const par = Number(f.par_level_bins) || 6;
       const trigger = Number(f.restock_trigger_bins) || 3;
+      const isSpecialty = f.type === 'specialty';
 
+      // Sales projection for the planning window (7 days)
       const projectedSales = round4(vel.total * (projectionDays / 7));
 
-      let upcomingDemandCookies = 0;
+      // Catering / wholesale demand — 2oz-aware.
+      // The cookie_oz field on the order item tells us the cookie size.
+      // A 4oz cookie occupies 1 standard slot in a bin (bin_capacity is sized
+      // around 4oz). A 2oz cookie takes only half that space — so 200 cookies
+      // at 2oz = 200 * 2/4 = 100 standard-equivalent units = 100/binCap bins.
+      let upcomingDemandBins = 0;
       for (const order of manualOrders || []) {
         const items = (order.manual_order_items || []).filter(i => i.flavor_id === f.id);
         for (const item of items) {
-          upcomingDemandCookies += Number(item.quantity) || 0;
+          const qty = Number(item.quantity) || 0;
+          const oz = Number(item.cookie_oz) || 4; // default to 4oz if not specified
+          // Bin demand = (cookies × oz/4) / bin_capacity
+          // A 2oz cookie is half the dough of a 4oz, so half the bin impact.
+          const standardEquivalent = qty * (oz / 4);
+          upcomingDemandBins += standardEquivalent / binCap;
         }
       }
-      const upcomingDemandBins = round4(cookiesToBins(upcomingDemandCookies, binCap));
+      upcomingDemandBins = round4(upcomingDemandBins);
 
       const totalDemand = round4(projectedSales + upcomingDemandBins);
       const endingWithoutProduction = round4(invItem.total - totalDemand);
-      const targetEnding = parTotal;
 
-      const rawNeeded = Math.max(0, targetEnding - endingWithoutProduction);
+      // Track-specific target & raw need
+      let targetEnding, rawNeeded, planLogic;
+      if (isSpecialty) {
+        // Monthly campaign model
+        const startTarget = 7;   // beginning-of-month target
+        const refillTarget = 5;  // mid-month refill target
+        const refillTrigger = 2; // mid-month: only bake if current dips this low
 
-      // Shelf life cap: don't make more than 2 weeks of velocity at once
-      const shelfLifeCap = vel.total * 2;
-      const cappedNeeded = shelfLifeCap > 0
-        ? Math.min(rawNeeded, shelfLifeCap + totalDemand)
-        : rawNeeded;
+        if (weekOfMonth === 1) {
+          // Week 1: stock up. Aim for 7-8 bins TOTAL across both stores.
+          targetEnding = startTarget;
+          rawNeeded = Math.max(0, targetEnding - endingWithoutProduction);
+          planLogic = `Week 1 of month — target ${startTarget} bins to start the month`;
+        } else if (weekOfMonth === 4) {
+          // Last week: don't make any more. Let it sell down.
+          targetEnding = 0;
+          rawNeeded = 0;
+          planLogic = `Week 4 of month — sell down, no production`;
+        } else {
+          // Weeks 2-3: only bake if running low (≤ 2 bins after sales)
+          if (endingWithoutProduction <= refillTrigger) {
+            targetEnding = refillTarget;
+            rawNeeded = Math.max(0, targetEnding - endingWithoutProduction);
+            planLogic = `Week ${weekOfMonth} — low (${endingWithoutProduction} ≤ ${refillTrigger}), refill to ${refillTarget}`;
+          } else {
+            targetEnding = endingWithoutProduction;
+            rawNeeded = 0;
+            planLogic = `Week ${weekOfMonth} — ${endingWithoutProduction} bins on track, no production`;
+          }
+        }
+      } else {
+        // Classics + extras: simple weekly replenishment.
+        // We want to wake up next Monday with ≥ par_level_bins after this week's sales.
+        targetEnding = par;
+        rawNeeded = Math.max(0, targetEnding - endingWithoutProduction);
+        planLogic = `Classic — target ${par} bins for next Monday`;
+      }
 
-      const batches = binsPerBatch > 0 && cappedNeeded > 0
-        ? Math.ceil(cappedNeeded / binsPerBatch)
+      // Round up to whole batches (Colin: full batches only, no halves)
+      const batches = binsPerBatch > 0 && rawNeeded > 0
+        ? Math.ceil(rawNeeded / binsPerBatch)
         : 0;
       const binsWillMake = round4(batches * binsPerBatch);
+
+      // Build human-readable formula breakdown for the UI
+      const formulaParts = [];
+      formulaParts.push(`Have ${round4(invItem.total)} bins`);
+      if (projectedSales > 0) formulaParts.push(`expect ~${projectedSales} sold this week`);
+      if (upcomingDemandBins > 0) formulaParts.push(`${upcomingDemandBins} bins for orders`);
+      if (targetEnding > 0) formulaParts.push(`want ${targetEnding} ending`);
+
+      const formulaMath = isSpecialty && batches === 0
+        ? planLogic
+        : (rawNeeded > 0
+            ? `${round4(invItem.total)} − ${totalDemand} + need ${round4(rawNeeded)} ÷ ${round4(binsPerBatch)}/batch → ${batches} batch${batches===1?'':'es'}`
+            : `On track — no production needed`);
 
       const needsProduction = batches > 0 && endingWithoutProduction < targetEnding;
       const critical = endingWithoutProduction < 0;
@@ -466,14 +533,20 @@ module.exports = async (req, res) => {
         totalDemand,
         endingWithoutProduction,
         targetEnding,
-        binsNeeded: round4(cappedNeeded),
+        binsNeeded: round4(rawNeeded),
         batches,
         binsWillMake,
         needsProduction,
         critical,
         belowTrigger,
         tcNeedsTransfer,
-        projectionDays
+        projectionDays,
+        // New fields for the UI breakdown
+        weekOfMonth,
+        planLogic,
+        formula: formulaParts.join(' · '),
+        formulaMath,
+        track: isSpecialty ? 'specialty' : 'classic'
       });
     }
 

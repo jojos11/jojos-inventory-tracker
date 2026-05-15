@@ -1151,10 +1151,11 @@ function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
 function ProductionTab({dashData}) {
   const plan = dashData?.productionPlan || [];
   const alerts = dashData?.alerts || [];
-  const projDays = dashData?.projectionDays || 14;
+  const projDays = dashData?.projectionDays || 7;
   const countFreshness = dashData?.countFreshness || {};
   const thisWeek = dashData?.thisWeek || {totalBatches:0,byBase:{},byFlavor:{}};
   const batchesByBase = dashData?.summary?.batchesByBase || {};
+  const weekOfMonth = plan[0]?.weekOfMonth;
 
   const needs = plan.filter(p=>p.needsProduction);
   const stocked = plan.filter(p=>!p.needsProduction);
@@ -1200,10 +1201,10 @@ function ProductionTab({dashData}) {
       </div>
 
       <div className="stats">
-        <Stat value={totalBatches} label="Batches Needed Next Week"/>
+        <Stat value={totalBatches} label="Batches to Make"/>
         <Stat value={needs.length} label="Flavors Need Dough" color="var(--orange)"/>
         <Stat value={stocked.length} label="Stocked" color="var(--green)"/>
-        <Stat value={`${projDays}d`} label="Projection Window"/>
+        <Stat value={`${projDays}d`} label="Projection"/>
       </div>
 
       {/* Alerts */}
@@ -1248,8 +1249,8 @@ function ProductionTab({dashData}) {
 
       {/* Production plan — flavors needing production */}
       <div className="card">
-        <h3>Production Plan <Tag>next {projDays} days</Tag></h3>
-        <p className="sub">Bins needed to keep both locations at par through the full production cycle (order Tue → truck Wed → prep Wed-Sun → dough Mon-Tue).</p>
+        <h3>Production Plan <Tag>next {projDays} days</Tag>{weekOfMonth && <Tag color="var(--gray)">Week {weekOfMonth} of month</Tag>}</h3>
+        <p className="sub">Bins needed for the next dough-making cycle (you make dough Mon/Tue). Math shown under each flavor — if a number looks off, check that flavor's par level in Settings.</p>
         {needs.length > 0 ? (
           <table>
             <thead><tr>
@@ -1261,39 +1262,50 @@ function ProductionTab({dashData}) {
               <th className="c">Batches</th>
             </tr></thead>
             <tbody>{needs.map(p => (
-              <tr key={p.flavor.id} className={p.critical?'critical':''}>
-                <td>
-                  <Dot color={p.critical?'var(--red)':p.batches>=3?'var(--yellow)':'var(--blue)'}/>
-                  <span style={{fontWeight:500}}>{p.flavor.name}</span>
-                  {p.tcNeedsTransfer && <Tag color="var(--blue)">TC TRANSFER</Tag>}
-                  {p.upcomingDemand > 0 && <Tag color="var(--orange)">+{p.upcomingDemand} order</Tag>}
-                  {!p.velocityReliable && <Tag color="var(--gray)">LIMITED DATA</Tag>}
-                </td>
-                <td className="c" style={{fontWeight:600}}>{p.current}
-                  <div style={{fontSize:10,color:'var(--gray)',fontWeight:400}}>
-                    P:{p.petoskey} <span style={{opacity:.7}}>({p.petFridge ?? 0}f+{p.petFreezer ?? 0}fz)</span>
-                    {' '}TC:{p.tc} <span style={{opacity:.7}}>({p.tcFridge ?? 0}f+{p.tcFreezer ?? 0}fz)</span>
-                  </div>
-                </td>
-                <td className="c" style={{color:'var(--gray)'}}>{p.velocity}</td>
-                <td className="c" style={{color:'var(--gray)'}}>{p.totalDemand}</td>
-                <td className="c" style={{color:p.endingWithoutProduction<0?'var(--red)':p.endingWithoutProduction<p.targetEnding?'var(--yellow)':'var(--gray)',fontWeight:p.endingWithoutProduction<0?700:400}}>{p.endingWithoutProduction}</td>
-                <td className="c">
-                  <span className="serif" style={{background:'rgba(162,204,235,.15)',color:'var(--blue)',fontWeight:700,padding:'4px 12px',borderRadius:6,fontSize:14}}>{p.batches}</span>
-                </td>
-              </tr>
+              <React.Fragment key={p.flavor.id}>
+                <tr className={p.critical?'critical':''}>
+                  <td>
+                    <Dot color={p.critical?'var(--red)':p.batches>=3?'var(--yellow)':'var(--blue)'}/>
+                    <span style={{fontWeight:500}}>{p.flavor.name}</span>
+                    {p.track === 'specialty' && <Tag color="var(--blue)">SPECIALTY</Tag>}
+                    {p.tcNeedsTransfer && <Tag color="var(--blue)">TC TRANSFER</Tag>}
+                    {p.upcomingDemand > 0 && <Tag color="var(--orange)">+{p.upcomingDemand} order</Tag>}
+                    {!p.velocityReliable && <Tag color="var(--gray)">LIMITED DATA</Tag>}
+                  </td>
+                  <td className="c" style={{fontWeight:600}}>{p.current}
+                    <div style={{fontSize:10,color:'var(--gray)',fontWeight:400}}>
+                      P:{p.petoskey} <span style={{opacity:.7}}>({p.petFridge ?? 0}f+{p.petFreezer ?? 0}fz)</span>
+                      {' '}TC:{p.tc} <span style={{opacity:.7}}>({p.tcFridge ?? 0}f+{p.tcFreezer ?? 0}fz)</span>
+                    </div>
+                  </td>
+                  <td className="c" style={{color:'var(--gray)'}}>{p.velocity}</td>
+                  <td className="c" style={{color:'var(--gray)'}}>{p.totalDemand}</td>
+                  <td className="c" style={{color:p.endingWithoutProduction<0?'var(--red)':p.endingWithoutProduction<p.targetEnding?'var(--yellow)':'var(--gray)',fontWeight:p.endingWithoutProduction<0?700:400}}>{p.endingWithoutProduction}</td>
+                  <td className="c">
+                    <span className="serif" style={{background:'rgba(162,204,235,.15)',color:'var(--blue)',fontWeight:700,padding:'4px 12px',borderRadius:6,fontSize:14}}>{p.batches}</span>
+                  </td>
+                </tr>
+                {/* Math breakdown — small grey row under the main row so Marisa can sanity-check */}
+                <tr className={p.critical?'critical':''}>
+                  <td colSpan={6} style={{padding:'0 12px 8px 32px',fontSize:11,color:'var(--gray)',borderTop:'none',fontStyle:'italic',lineHeight:1.5}}>
+                    <span style={{color:'var(--blue)'}}>{p.planLogic}</span>
+                    {p.formulaMath ? <span> · {p.formulaMath}</span> : null}
+                    {p.binsWillMake > 0 && <span style={{color:'var(--gray)'}}> · makes ~{p.binsWillMake} bins</span>}
+                  </td>
+                </tr>
+              </React.Fragment>
             ))}</tbody>
           </table>
         ) : (
-          <p style={{color:'var(--green)',padding:20,textAlign:'center'}}>✓ All flavors stocked through the projection window.</p>
+          <p style={{color:'var(--green)',padding:20,textAlign:'center'}}>✓ All flavors stocked for the next production cycle.</p>
         )}
 
         {stocked.length > 0 && (
           <div style={{marginTop:14}}>
-            <div className="section-label" style={{color:'var(--green)'}}>Stocked — Skip Next Week</div>
+            <div className="section-label" style={{color:'var(--green)'}}>Stocked — Skip This Week</div>
             <div className="stocked-chips" style={{padding:'0 12px'}}>
               {stocked.map(p => (
-                <span key={p.flavor.id} className="stocked-chip">
+                <span key={p.flavor.id} className="stocked-chip" title={p.planLogic}>
                   {p.flavor.name} ({p.current})
                 </span>
               ))}
