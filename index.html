@@ -384,78 +384,111 @@ function DoughTab({loc, setLoc, flavors, products, dashData, onSaved}) {
       }
       setPrevProductCounts(prevProd);
 
-      // Restore local draft if present (survives refresh/sleep).
-      // If no draft, seed counts from previous night's values as PROVISIONAL —
-      // the values appear in the steppers/presets but aren't "confirmed" until
-      // the employee taps a button (any preset/+/−). This makes the common case
-      // (unchanged inventory) a single confirm-tap instead of many taps to reach
-      // the right number.
-      let restoredFromDraft = false;
+      // Build the pre-fill state from last counts FIRST. Then we overlay any
+      // in-progress draft on top so the user's edits aren't lost on refresh.
+      //
+      // Previous design: drafts blocked pre-fill entirely (all-or-nothing).
+      // The bug: a single touched flavor created a draft, which then prevented
+      // every OTHER flavor from getting its "last count" seed on subsequent
+      // loads — Triple Chip would show "last: 5" in the header but `−` in the
+      // stepper because pre-fill never ran.
+      //
+      // New design: pre-fill is the foundation, draft is an overlay. For any
+      // flavor the user touched, the draft value wins. For flavors they
+      // haven't gotten to yet, pre-fill still applies.
+
+      // Step 1: build pre-fill maps from `prev` (last-count snapshots)
+      const seedCounts = {};
+      const seedConfirmed = {};
+      for (const fId of Object.keys(prev)) {
+        const p = prev[fId];
+        const entry = {};
+        const confEntry = {};
+        if (p.fridge !== null && p.fridge !== undefined) {
+          entry.fridge = String(p.fridge);
+          confEntry.fridge = true;
+        }
+        if (p.freezer !== null && p.freezer !== undefined) {
+          entry.freezer = String(p.freezer);
+          confEntry.freezer = true;
+        }
+        if (Object.keys(entry).length > 0) {
+          seedCounts[fId] = entry;
+          seedConfirmed[fId] = confEntry;
+        }
+      }
+      const seedProd = {};
+      const seedProdConfirmed = {};
+      for (const pId of Object.keys(prevProd)) {
+        seedProd[pId] = String(prevProd[pId]);
+        seedProdConfirmed[pId] = true;
+      }
+
+      // Step 2: load draft (if any) and overlay it on top of the pre-fill
+      let draftCountedBy = '', draftNotes = '';
+      let draftNotStocked = {}, draftProdNotStocked = {};
       try {
         const raw = localStorage.getItem(storageKey);
         if (raw) {
           const draft = JSON.parse(raw);
           const ageMs = Date.now() - (draft.savedAt || 0);
-          // Only restore drafts younger than 18 hours AND that include the new
-          // 'confirmed' field. Older drafts from before the pre-fill feature
-          // are stale by design — they'd block pre-fill from running.
-          const hasNewSchema = draft.confirmed !== undefined;
-          if (ageMs < 18 * 3600000 && hasNewSchema) {
-            if (draft.counts) setCounts(draft.counts);
-            if (draft.notStocked) setNotStocked(draft.notStocked);
-            if (draft.confirmed) setConfirmed(draft.confirmed);
-            if (draft.productCounts) setProductCounts(draft.productCounts);
-            if (draft.productNotStocked) setProductNotStocked(draft.productNotStocked);
-            if (draft.productConfirmed) setProductConfirmed(draft.productConfirmed);
-            if (draft.countedBy) setCountedBy(draft.countedBy);
-            if (draft.notes) setNotes(draft.notes);
-            restoredFromDraft = true;
+          if (ageMs < 18 * 3600000) {
+            // Overlay draft counts per-flavor (draft wins for touched flavors,
+            // pre-fill stays for untouched ones)
+            if (draft.counts) {
+              for (const fId of Object.keys(draft.counts)) {
+                seedCounts[fId] = {...(seedCounts[fId] || {}), ...draft.counts[fId]};
+              }
+            }
+            // Same overlay for confirmed flags
+            if (draft.confirmed) {
+              for (const fId of Object.keys(draft.confirmed)) {
+                seedConfirmed[fId] = {...(seedConfirmed[fId] || {}), ...draft.confirmed[fId]};
+              }
+            }
+            // Not-stocked, product counts, and product confirmed are full replacements
+            // (they're sparse maps where presence = user touched)
+            if (draft.notStocked) draftNotStocked = draft.notStocked;
+            if (draft.productCounts) {
+              for (const pId of Object.keys(draft.productCounts)) {
+                seedProd[pId] = draft.productCounts[pId];
+              }
+            }
+            if (draft.productConfirmed) {
+              for (const pId of Object.keys(draft.productConfirmed)) {
+                seedProdConfirmed[pId] = draft.productConfirmed[pId];
+              }
+            }
+            if (draft.productNotStocked) draftProdNotStocked = draft.productNotStocked;
+            if (draft.countedBy) draftCountedBy = draft.countedBy;
+            if (draft.notes) draftNotes = draft.notes;
+
+            // For any flavor marked not-stocked in the draft, clear its pre-fill
+            // (not-stocked overrides actual count values)
+            for (const fId of Object.keys(draftNotStocked)) {
+              delete seedCounts[fId];
+              delete seedConfirmed[fId];
+            }
+            for (const pId of Object.keys(draftProdNotStocked)) {
+              delete seedProd[pId];
+              delete seedProdConfirmed[pId];
+            }
           } else {
-            // Stale or pre-feature draft: nuke it so pre-fill can run
+            // Older than 18h: stale, throw it out
             localStorage.removeItem(storageKey);
           }
         }
       } catch(e) { /* ignore parse errors */ }
 
-      // No draft: seed counts from previous values AND mark them confirmed.
-      // Per Marisa's feedback: she's counting on a tablet at the freezer/fridge
-      // and even one tap per flavor adds up across 17 flavors × 2 locations.
-      // Pre-fill values are accepted by default — the variance check (≥2.5x or
-      // ≤0.3x of previous) still catches huge swings as a safety net.
-      // Employees only need to interact with flavors whose counts CHANGED.
-      if (!restoredFromDraft) {
-        const seedCounts = {};
-        const seedConfirmed = {};
-        for (const fId of Object.keys(prev)) {
-          const p = prev[fId];
-          const entry = {};
-          const confEntry = {};
-          if (p.fridge !== null && p.fridge !== undefined) {
-            entry.fridge = String(p.fridge);
-            confEntry.fridge = true;
-          }
-          if (p.freezer !== null && p.freezer !== undefined) {
-            entry.freezer = String(p.freezer);
-            confEntry.freezer = true;
-          }
-          if (Object.keys(entry).length > 0) {
-            seedCounts[fId] = entry;
-            seedConfirmed[fId] = confEntry;
-          }
-        }
-        setCounts(seedCounts);
-        setConfirmed(seedConfirmed);
-
-        // Same for products
-        const seedProd = {};
-        const seedProdConfirmed = {};
-        for (const pId of Object.keys(prevProd)) {
-          seedProd[pId] = String(prevProd[pId]);
-          seedProdConfirmed[pId] = true;
-        }
-        setProductCounts(seedProd);
-        setProductConfirmed(seedProdConfirmed);
-      }
+      // Step 3: apply everything in one shot
+      setCounts(seedCounts);
+      setConfirmed(seedConfirmed);
+      setNotStocked(draftNotStocked);
+      setProductCounts(seedProd);
+      setProductConfirmed(seedProdConfirmed);
+      setProductNotStocked(draftProdNotStocked);
+      if (draftCountedBy) setCountedBy(draftCountedBy);
+      if (draftNotes) setNotes(draftNotes);
     })();
   }, [locId, flavors, products]);
 
