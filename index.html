@@ -3449,7 +3449,7 @@ function SettingsTab({flavors, onRefresh}) {
 // ─── MAIN APP ───────────────────────
 function App() {
   const [authed, setAuthed] = useState(false);
-  const [tab, setTab] = useState('production');
+  const [tab, setTab] = useState('inventory');
   const [loc, setLoc] = useState('petoskey');
   const [flavors, setFlavors] = useState([]);
   const [products, setProducts] = useState([]);
@@ -3487,12 +3487,12 @@ function App() {
   if (loading) return <div className="login-wrap"><div style={{textAlign:'center'}}><p style={{color:'var(--gray)'}}>Loading...</p></div></div>;
 
   const tabs = [
-    {id:'production',label:'Production'},
     {id:'inventory',label:'Inventory'},
-    {id:'prep',label:'Prep List'},
     {id:'dough',label:'Nightly Count'},
-    {id:'orders',label:'Order Lists'},
     {id:'manual',label:'Orders'},
+    {id:'prep',label:'Prep List'},
+    {id:'orders',label:'Order Lists'},
+    {id:'production',label:'Production'},
     {id:'log',label:'Log Production'},
     {id:'transfers',label:'Transfers'},
     {id:'settings',label:'Settings'},
