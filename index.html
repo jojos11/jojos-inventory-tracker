@@ -2066,28 +2066,194 @@ function LogProductionTab({flavors, products}) {
 // ─── TRANSFERS ──────────────────────
 function TransfersTab({flavors}) {
   const [transfers, setTransfers] = useState([]);
+  const [employees, setEmployees] = useState([]);
   const [flavor, setFlavor] = useState('');
   const [bins, setBins] = useState('');
-  const load = () => db('transfers','select',{orderBy:'date:desc',limit:20}).then(d=>setTransfers(d.data||[]));
-  useEffect(() => { load(); }, []);
-  const logTransfer = async () => {
-    if (!flavor||!bins) return;
-    await db('transfers','insert',{data:{flavor_id:parseInt(flavor), from_location_id:1, to_location_id:2, bins:parseFloat(bins), date:new Date().toISOString().split('T')[0], transferred_by:'manager'}});
-    setFlavor(''); setBins(''); load();
+  const [fromLoc, setFromLoc] = useState('1'); // 1=Pet (default), 2=TC
+  const [storage, setStorage] = useState('fridge'); // fridge or freezer
+  const [transferredBy, setTransferredBy] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  const load = () => {
+    db('transfers','select',{orderBy:'date:desc',limit:20}).then(d=>setTransfers(d.data||[]));
+    db('employees','select',{filters:{active:true},orderBy:'name'}).then(d=>setEmployees(d.data||[]));
   };
+  useEffect(() => { load(); }, []);
+
+  const toLoc = fromLoc === '1' ? '2' : '1';
+  const fromName = fromLoc === '1' ? 'Petoskey' : 'Traverse City';
+  const toName = fromLoc === '1' ? 'Traverse City' : 'Petoskey';
+
+  // Find the latest actual count for a given flavor + location + storage
+  // so we can compute the post-transfer balance.
+  const getLatestCount = async (flavorId, locationId, storageType) => {
+    const {data} = await db('inventory_snapshots','select',{
+      filters:{
+        flavor_id: flavorId,
+        location_id: locationId,
+        storage: storageType,
+        actual_bins:{not:'is.null'}
+      },
+      orderBy:'created_at:desc',
+      limit:1
+    });
+    return data && data.length > 0 && data[0].actual_bins !== null
+      ? Number(data[0].actual_bins) : null;
+  };
+
+  const logTransfer = async () => {
+    if (!flavor || !bins) { setMsg('Pick a flavor and enter bin count.'); return; }
+    const binAmt = parseFloat(bins);
+    if (isNaN(binAmt) || binAmt <= 0) { setMsg('Bin count must be greater than 0.'); return; }
+    if (!transferredBy) { setMsg('Pick who transferred it.'); return; }
+
+    setSaving(true);
+    setMsg('');
+    const flavorId = parseInt(flavor);
+    const today = new Date().toISOString().split('T')[0];
+    const nowIso = new Date().toISOString();
+
+    try {
+      // 1. Write the transfer row itself
+      await db('transfers','insert',{data:{
+        flavor_id: flavorId,
+        from_location_id: parseInt(fromLoc),
+        to_location_id: parseInt(toLoc),
+        bins: binAmt,
+        date: today,
+        transferred_by: transferredBy
+      }});
+
+      // 2. Auto-create snapshots on BOTH sides so the nightly count
+      //    pre-fill reflects the new reality. These are tagged
+      //    "auto: transfer" so they can be distinguished from physical
+      //    counts in the future.
+      const fromLatest = await getLatestCount(flavorId, parseInt(fromLoc), storage);
+      const toLatest = await getLatestCount(flavorId, parseInt(toLoc), storage);
+
+      // From side: subtract. Clamp at 0 (can't go negative).
+      if (fromLatest !== null) {
+        const newFrom = Math.max(0, fromLatest - binAmt);
+        await db('inventory_snapshots','insert',{data:{
+          flavor_id: flavorId,
+          location_id: parseInt(fromLoc),
+          date: today,
+          storage,
+          actual_bins: newFrom,
+          counted_by: `auto: transfer (-${binAmt} to ${toName})`,
+          created_at: nowIso
+        }});
+      }
+      // To side: add. If no prior count exists at the destination,
+      // start it at the transferred amount.
+      const newTo = (toLatest || 0) + binAmt;
+      await db('inventory_snapshots','insert',{data:{
+        flavor_id: flavorId,
+        location_id: parseInt(toLoc),
+        date: today,
+        storage,
+        actual_bins: newTo,
+        counted_by: `auto: transfer (+${binAmt} from ${fromName})`,
+        created_at: nowIso
+      }});
+
+      const flavorName = flavors.find(f=>f.id===flavorId)?.name || 'flavor';
+      setMsg(`✓ Logged ${binAmt} bin${binAmt===1?'':'s'} of ${flavorName} ${fromName} → ${toName}`);
+      setTimeout(()=>setMsg(''), 5000);
+      setFlavor(''); setBins('');
+      load();
+    } catch(e) {
+      setMsg('Error: ' + e.message);
+    }
+    setSaving(false);
+  };
+
   return (
     <div>
-      <div className="card"><h3>Transfer Dough → TC</h3><p className="sub">Log when bins move from Petoskey to Traverse City.</p>
-        <div style={{display:'flex',gap:8,marginTop:12}}>
-          <select className="select" style={{flex:2}} value={flavor} onChange={e=>setFlavor(e.target.value)}><option value="">Select flavor</option>{flavors.map(f=><option key={f.id} value={f.id}>{f.name}</option>)}</select>
-          <input className="input-wide" style={{flex:1}} type="number" step="0.25" placeholder="Bins" value={bins} onChange={e=>setBins(e.target.value)}/>
-          <button className="btn btn-blue" onClick={logTransfer}>Log Transfer</button>
+      <div className="card">
+        <h3>Transfer Dough Between Locations</h3>
+        <p className="sub">Subtracts from the source location's count and adds to the destination — nightly count will physically verify both sides.</p>
+
+        {/* Direction toggle */}
+        <div style={{display:'flex',gap:0,border:'1px solid var(--border)',borderRadius:8,overflow:'hidden',marginTop:14,maxWidth:420}}>
+          <button
+            className={`btn ${fromLoc==='1'?'btn-blue':'btn-outline'}`}
+            style={{flex:1,borderRadius:0,padding:'10px',fontSize:13,border:'none'}}
+            onClick={()=>setFromLoc('1')}>Petoskey → TC</button>
+          <button
+            className={`btn ${fromLoc==='2'?'btn-blue':'btn-outline'}`}
+            style={{flex:1,borderRadius:0,padding:'10px',fontSize:13,border:'none',borderLeft:'1px solid var(--border)'}}
+            onClick={()=>setFromLoc('2')}>TC → Petoskey</button>
         </div>
+
+        <div style={{display:'flex',gap:8,marginTop:12,flexWrap:'wrap'}}>
+          <select className="select" style={{flex:'2 1 200px'}} value={flavor} onChange={e=>setFlavor(e.target.value)}>
+            <option value="">Select flavor</option>
+            {flavors.map(f=><option key={f.id} value={f.id}>{f.name}</option>)}
+          </select>
+          <input className="input-wide" style={{flex:'1 1 80px',minWidth:80}}
+            type="number" step="0.25" placeholder="Bins"
+            value={bins} onChange={e=>setBins(e.target.value)}/>
+        </div>
+
+        {/* Storage choice */}
+        <div style={{display:'flex',gap:8,marginTop:8}}>
+          <button
+            className={`btn ${storage==='fridge'?'btn-blue':'btn-outline'}`}
+            style={{flex:1,padding:'10px',fontSize:13}}
+            onClick={()=>setStorage('fridge')}>❄ Fridge</button>
+          <button
+            className={`btn ${storage==='freezer'?'btn-blue':'btn-outline'}`}
+            style={{flex:1,padding:'10px',fontSize:13}}
+            onClick={()=>setStorage('freezer')}>🧊 Freezer</button>
+        </div>
+
+        <div style={{display:'flex',gap:8,marginTop:8,flexWrap:'wrap',alignItems:'center'}}>
+          <select className="select" style={{flex:'1 1 200px'}}
+            value={transferredBy} onChange={e=>setTransferredBy(e.target.value)}>
+            <option value="">Transferred by...</option>
+            {employees.map(e=><option key={e.id} value={e.name}>{e.name}</option>)}
+          </select>
+          <button className="btn btn-blue"
+            style={{flex:'1 1 140px',padding:'10px',fontSize:14}}
+            disabled={saving}
+            onClick={logTransfer}>
+            {saving ? 'Logging...' : `Log Transfer →`}
+          </button>
+        </div>
+
+        {msg && (
+          <div style={{marginTop:10,padding:'8px 12px',borderRadius:6,
+            background: msg.startsWith('✓') ? 'rgba(76,175,80,.12)' : 'rgba(239,83,80,.12)',
+            color: msg.startsWith('✓') ? 'var(--green)' : 'var(--red)',
+            fontSize:13,fontWeight:500}}>
+            {msg}
+          </div>
+        )}
       </div>
-      <div className="card"><h3>Recent Transfers</h3>
-        {transfers.length===0?<p style={{color:'var(--gray)',padding:20,textAlign:'center'}}>No transfers yet.</p>:(
-          <table style={{marginTop:10}}><thead><tr><th>Date</th><th>Flavor</th><th className="c">Bins</th><th>Direction</th></tr></thead>
-          <tbody>{transfers.map(t=><tr key={t.id}><td>{t.date}</td><td style={{fontWeight:500}}>{flavors.find(f=>f.id===t.flavor_id)?.name||'?'}</td><td className="c" style={{fontWeight:700}}>{t.bins}</td><td style={{color:'var(--blue)'}}>Petoskey → TC</td></tr>)}</tbody></table>
+
+      <div className="card">
+        <h3>Recent Transfers</h3>
+        {transfers.length===0 ? (
+          <p style={{color:'var(--gray)',padding:20,textAlign:'center'}}>No transfers yet.</p>
+        ) : (
+          <table style={{marginTop:10}}>
+            <thead><tr><th>Date</th><th>Flavor</th><th className="c">Bins</th><th>Direction</th><th>By</th></tr></thead>
+            <tbody>{transfers.map(t => {
+              const f = flavors.find(f=>f.id===t.flavor_id);
+              const dirArrow = t.from_location_id === 1 ? 'Petoskey → TC' : 'TC → Petoskey';
+              return (
+                <tr key={t.id}>
+                  <td>{t.date}</td>
+                  <td style={{fontWeight:500}}>{f?.name || '?'}</td>
+                  <td className="c" style={{fontWeight:700}}>{t.bins}</td>
+                  <td style={{color:'var(--blue)',fontSize:12}}>{dirArrow}</td>
+                  <td style={{color:'var(--gray)',fontSize:12}}>{t.transferred_by || '—'}</td>
+                </tr>
+              );
+            })}</tbody>
+          </table>
         )}
       </div>
     </div>
