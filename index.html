@@ -1858,15 +1858,11 @@ function LogProductionTab({flavors, products}) {
         <p className="sub">Tap +/− on each flavor as you make full batches. Hit save when done — ingredients will be deducted from your pantry automatically.</p>
 
         <div style={{display:'flex',gap:10,marginTop:14,flexWrap:'wrap',alignItems:'center'}}>
-          <div style={{display:'flex',gap:0,border:'1px solid var(--border)',borderRadius:8,overflow:'hidden'}}>
-            <button
-              className={`btn ${sessionLoc==='1'?'btn-blue':'btn-outline'}`}
-              style={{borderRadius:0,padding:'8px 16px',fontSize:13,border:'none'}}
-              onClick={()=>setSessionLoc('1')}>Petoskey</button>
-            <button
-              className={`btn ${sessionLoc==='2'?'btn-blue':'btn-outline'}`}
-              style={{borderRadius:0,padding:'8px 16px',fontSize:13,border:'none',borderLeft:'1px solid var(--border)'}}
-              onClick={()=>setSessionLoc('2')}>Traverse City</button>
+          {/* Production happens at Petoskey only. Locked to avoid mis-attribution
+              of batches to TC (which doesn't make dough). */}
+          <div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 14px',border:'1px solid var(--blue)',borderRadius:8,background:'rgba(162,204,235,.08)'}}>
+            <span style={{fontSize:11,color:'var(--gray)',textTransform:'uppercase',letterSpacing:'.6px',fontWeight:600}}>Location</span>
+            <span style={{fontSize:13,fontWeight:700,color:'var(--blue)'}}>Petoskey</span>
           </div>
           <select className="select" style={{flex:'1 1 200px',maxWidth:280}}
             value={sessionBaker} onChange={e=>setSessionBaker(e.target.value)}>
@@ -1979,7 +1975,7 @@ function LogProductionTab({flavors, products}) {
                 ? 'Add batches to flavors above'
                 : !sessionBaker
                   ? 'Pick baker to enable save'
-                  : `✓ Save · ${totalSessionBatches} batch${totalSessionBatches===1?'':'es'} at ${locName}`}
+                  : `✓ Save Session · ${totalSessionBatches} batch${totalSessionBatches===1?'':'es'}`}
           </button>
         </div>
         <p style={{fontSize:11,color:'var(--gray)',marginTop:8,marginBottom:0,textAlign:'center'}}>
