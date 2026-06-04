@@ -173,6 +173,20 @@ td.c{text-align:center}
  .tc-note-status{font-size:11px;color:var(--gray)}
  .tc-note-actions{display:flex;gap:8px}
  @media (max-width:768px){.tc-note-panel{flex:1 1 100%;width:100%}}
+ /* Compact inventory view — pack many more flavors on screen */
+ .inv-compact .inv-grid-header{padding:7px 14px}
+ .inv-compact .inv-row{padding:4px 14px;gap:10px}
+ .inv-compact .inv-cell-flavor{flex-direction:row;align-items:baseline;gap:8px;flex-wrap:wrap}
+ .inv-compact .inv-cell-loc{flex-direction:row;align-items:center;gap:8px;padding:3px 8px;flex-wrap:nowrap}
+ .inv-compact .inv-numbers{gap:10px;flex-wrap:nowrap}
+ .inv-compact .inv-num{font-size:13px}
+ .inv-compact .inv-num-icon{font-size:13px;filter:none}
+ .inv-compact .inv-total{font-size:13px;margin-left:0}
+ .inv-compact .inv-staleness{margin:0}
+ .inv-compact .inv-staleness span:last-child{display:none}
+ .inv-compact .inv-combined-num{font-size:16px}
+ .inv-compact .inv-cell-combined{display:flex;align-items:baseline;gap:8px;justify-content:flex-end}
+ .inv-compact .inv-combined-sub{margin-top:0}
 @media (max-width:768px){
   .inv-grid-header{display:none}
   .inv-row{grid-template-columns:1fr;gap:8px;padding:14px 12px}
@@ -2354,6 +2368,8 @@ function InventoryTab({flavors, products}) {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [hideEmpty, setHideEmpty] = useState(false);
+  const [compact, setCompact] = useState(() => { try { return localStorage.getItem('jojo_inv_density') !== 'comfortable'; } catch (e) { return true; } });
+  useEffect(() => { try { localStorage.setItem('jojo_inv_density', compact ? 'compact' : 'comfortable'); } catch (e) {} }, [compact]);
 
   useEffect(() => {
     (async () => {
@@ -2542,6 +2558,10 @@ function InventoryTab({flavors, products}) {
             <input type="checkbox" checked={hideEmpty} onChange={e=>setHideEmpty(e.target.checked)}/>
             Hide flavors with zero stock at both locations
           </label>
+          <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'var(--gray)',cursor:'pointer'}}>
+            <input type="checkbox" checked={compact} onChange={e=>setCompact(e.target.checked)}/>
+            Compact view
+          </label>
           <div style={{marginLeft:'auto',fontSize:11,color:'var(--gray)',display:'flex',gap:12,alignItems:'center'}}>
             <span><span className="stale-dot stale-ok"/> Fresh</span>
             <span><span className="stale-dot stale-yellow"/> &gt;24h</span>
@@ -2553,7 +2573,7 @@ function InventoryTab({flavors, products}) {
       {/* Grid + Take-to-TC notes, side by side on wide screens (stacks <=1024px) */}
       <div className="inv-grid-with-notes">
       {/* Main comparison grid */}
-      <div className="card inv-grid-card" style={{padding:0,overflow:'hidden'}}>
+      <div className={"card inv-grid-card" + (compact ? " inv-compact" : "")} style={{padding:0,overflow:'hidden'}}>
         <div className="inv-grid-header">
           <div className="inv-cell-flavor">Flavor</div>
           <div className="inv-cell-loc">
