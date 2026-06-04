@@ -162,6 +162,17 @@ td.c{text-align:center}
 .stale-dot.stale-red{background:var(--red)}
 .stale-dot.stale-none{background:var(--gray2)}
 .inv-product-header{padding:14px 16px;background:linear-gradient(90deg,rgba(162,204,235,.08),transparent);border-bottom:1px solid var(--border);font-size:13px;font-weight:700;color:var(--blue);text-transform:uppercase;letter-spacing:.8px;display:flex;align-items:center;gap:8px}
+ .inv-grid-with-notes{display:flex;gap:14px;align-items:flex-start}
+ .inv-grid-with-notes>.inv-grid-card{flex:1 1 auto;min-width:0}
+ .tc-note-panel{flex:0 0 300px;display:flex;flex-direction:column;gap:10px;padding:16px}
+ .tc-note-title{font-weight:700;font-size:14px;color:var(--blue)}
+ .tc-note-sub{font-size:11px;color:var(--gray);margin-top:3px;line-height:1.4}
+ .tc-note-area{width:100%;min-height:220px;resize:vertical;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;color:#fff;font-size:14px;line-height:1.5;font-family:inherit}
+ .tc-note-area:focus{outline:none;border-color:var(--blue)}
+ .tc-note-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+ .tc-note-status{font-size:11px;color:var(--gray)}
+ .tc-note-actions{display:flex;gap:8px}
+ @media (max-width:1024px){.inv-grid-with-notes{flex-direction:column}.tc-note-panel{flex:1 1 auto;width:100%}}
 @media (max-width:768px){
   .inv-grid-header{display:none}
   .inv-row{grid-template-columns:1fr;gap:8px;padding:14px 12px}
@@ -2267,6 +2278,44 @@ function InventoryTab({flavors, products}) {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [hideEmpty, setHideEmpty] = useState(false);
+  // "Take to Traverse City" shared transfer note (persisted singleton row id=1)
+  const [tcNote, setTcNote] = useState('');
+  const [tcNoteLoaded, setTcNoteLoaded] = useState('');   // last saved value, for dirty detection
+  const [tcNoteSavedAt, setTcNoteSavedAt] = useState(null);
+  const [tcNoteSaving, setTcNoteSaving] = useState(false);
+  const [tcNoteMsg, setTcNoteMsg] = useState('');
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data } = await db('tc_transfer_notes','select',{ filters:{ id:1 } });
+        const row = (data && data[0]) || null;
+        if (row) {
+          setTcNote(row.note || '');
+          setTcNoteLoaded(row.note || '');
+          setTcNoteSavedAt(row.updated_at || null);
+        }
+      } catch (e) {
+        console.error('TC note load failed:', e.message);  // non-fatal; panel still usable
+      }
+    })();
+  }, []);
+
+  const saveTcNote = async (valueArg) => {
+    const value = valueArg !== undefined ? valueArg : tcNote;
+    setTcNoteSaving(true); setTcNoteMsg('');
+    try {
+      const now = new Date().toISOString();
+      await db('tc_transfer_notes','update',{ id:1, data:{ note:value, updated_at:now } });
+      setTcNoteLoaded(value); setTcNoteSavedAt(now); setTcNoteMsg('Saved');
+      setTimeout(()=>setTcNoteMsg(''), 2000);
+    } catch (e) {
+      setTcNoteMsg('Save failed — try again');
+      console.error('TC note save failed:', e.message);
+    } finally { setTcNoteSaving(false); }
+  };
+  const clearTcNote = async () => { setTcNote(''); await saveTcNote(''); };
+  const tcNoteDirty = tcNote !== tcNoteLoaded;
 
   useEffect(() => {
     (async () => {
@@ -2463,8 +2512,10 @@ function InventoryTab({flavors, products}) {
         </div>
       </div>
 
+      {/* Grid + Take-to-TC notes, side by side on wide screens (stacks <=1024px) */}
+      <div className="inv-grid-with-notes">
       {/* Main comparison grid */}
-      <div className="card" style={{padding:0,overflow:'hidden'}}>
+      <div className="card inv-grid-card" style={{padding:0,overflow:'hidden'}}>
         <div className="inv-grid-header">
           <div className="inv-cell-flavor">Flavor</div>
           <div className="inv-cell-loc">
@@ -2548,6 +2599,35 @@ function InventoryTab({flavors, products}) {
             </div>
           );
         })}
+      </div>
+
+      {/* Take to Traverse City — shared, persisted transfer note */}
+        <div className="tc-note-panel card">
+          <div>
+            <div className="tc-note-title">📦 Take to Traverse City</div>
+            <div className="tc-note-sub">What to load for the next TC run — saved &amp; shared with both stores</div>
+          </div>
+          <textarea
+            className="tc-note-area"
+            placeholder={"e.g.\n3 Chocolate Chip\n2 Famous Sugar\n1 Monster"}
+            value={tcNote}
+            onChange={e => setTcNote(e.target.value)}
+            onBlur={() => { if (tcNoteDirty) saveTcNote(); }}
+          />
+          <div className="tc-note-foot">
+            <span className="tc-note-status">
+              {tcNoteSaving ? 'Saving…'
+                : tcNoteMsg ? tcNoteMsg
+                : tcNoteDirty ? '\u25CF Unsaved changes'
+                : tcNoteSavedAt ? `Saved \u00B7 ${fmtWhen(tcNoteSavedAt)}`
+                : 'Not saved yet'}
+            </span>
+            <span className="tc-note-actions">
+              <button className="btn btn-outline" onClick={clearTcNote} disabled={tcNoteSaving || (!tcNote && !tcNoteLoaded)}>Clear</button>
+              <button className="btn btn-blue" onClick={() => saveTcNote()} disabled={tcNoteSaving || !tcNoteDirty}>Save</button>
+            </span>
+          </div>
+        </div>
       </div>
 
       {/* Products section: cookie dough, ice cream sandwiches, buttercream bags.
