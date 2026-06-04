@@ -6,7 +6,8 @@ const VALID_TABLES = [
   'flavor_sub_recipes','dough_inventory','pantry','deliveries','delivery_items',
   'production_logs','transfers','sales','inventory_snapshots','manual_orders',
   'manual_order_items','product_sizes','employees','flavor_schedule',
-  'products','product_ingredients','product_snapshots','product_production_logs'
+  'products','product_ingredients','product_snapshots','product_production_logs',
+  'inventory_notes'
 ];
 
 module.exports = async (req, res) => {
