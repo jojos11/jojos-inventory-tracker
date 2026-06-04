@@ -162,9 +162,9 @@ td.c{text-align:center}
 .stale-dot.stale-red{background:var(--red)}
 .stale-dot.stale-none{background:var(--gray2)}
 .inv-product-header{padding:14px 16px;background:linear-gradient(90deg,rgba(162,204,235,.08),transparent);border-bottom:1px solid var(--border);font-size:13px;font-weight:700;color:var(--blue);text-transform:uppercase;letter-spacing:.8px;display:flex;align-items:center;gap:8px}
- .inv-grid-with-notes{display:flex;gap:14px;align-items:flex-start}
- .inv-grid-with-notes>.inv-grid-card{flex:1 1 auto;min-width:0}
- .tc-note-panel{flex:0 0 300px;display:flex;flex-direction:column;gap:10px;padding:16px}
+ .inv-grid-with-notes{display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap}
+ .inv-grid-with-notes>.inv-grid-card{flex:2 1 380px;min-width:0}
+ .tc-note-panel{flex:1 1 240px;display:flex;flex-direction:column;gap:10px;padding:16px}
  .tc-note-title{font-weight:700;font-size:14px;color:var(--blue)}
  .tc-note-sub{font-size:11px;color:var(--gray);margin-top:3px;line-height:1.4}
  .tc-note-area{width:100%;min-height:220px;resize:vertical;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;color:#fff;font-size:14px;line-height:1.5;font-family:inherit}
@@ -172,7 +172,7 @@ td.c{text-align:center}
  .tc-note-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
  .tc-note-status{font-size:11px;color:var(--gray)}
  .tc-note-actions{display:flex;gap:8px}
- @media (max-width:1024px){.inv-grid-with-notes{flex-direction:column}.tc-note-panel{flex:1 1 auto;width:100%}}
+ @media (max-width:768px){.tc-note-panel{flex:1 1 100%;width:100%}}
 @media (max-width:768px){
   .inv-grid-header{display:none}
   .inv-row{grid-template-columns:1fr;gap:8px;padding:14px 12px}
@@ -2272,50 +2272,88 @@ function TransfersTab({flavors}) {
 // per (flavor, location, storage) in a Petoskey vs TC side-by-side layout.
 // One query pulls the last 30 days of snapshots, then we pick the most recent
 // per (flavor, location, storage) client-side. Much faster than looping queries.
+// Reusable free-text planning note. Persists to inventory_notes keyed by noteKey,
+// shared across both stores. Autosaves on blur; explicit Save/Clear buttons too.
+function NotesPanel({ noteKey, title, subtitle, placeholder }) {
+  const [note, setNote] = useState('');
+  const [loaded, setLoaded] = useState('');   // last saved value, for dirty detection
+  const [savedAt, setSavedAt] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data } = await db('inventory_notes','select',{ filters:{ key: noteKey } });
+        const row = (data && data[0]) || null;
+        if (row) { setNote(row.note || ''); setLoaded(row.note || ''); setSavedAt(row.updated_at || null); }
+      } catch (e) {
+        console.error('Note load failed [' + noteKey + ']:', e.message);  // non-fatal
+      }
+    })();
+  }, [noteKey]);
+
+  const save = async (valueArg) => {
+    const value = valueArg !== undefined ? valueArg : note;
+    setSaving(true); setMsg('');
+    try {
+      const now = new Date().toISOString();
+      await db('inventory_notes','update',{ filters:{ key: noteKey }, data:{ note: value, updated_at: now } });
+      setLoaded(value); setSavedAt(now); setMsg('Saved');
+      setTimeout(() => setMsg(''), 2000);
+    } catch (e) {
+      setMsg('Save failed — try again');
+      console.error('Note save failed [' + noteKey + ']:', e.message);
+    } finally { setSaving(false); }
+  };
+  const clear = async () => { setNote(''); await save(''); };
+  const dirty = note !== loaded;
+  const ago = (iso) => {
+    if (!iso) return '';
+    const h = (Date.now() - new Date(iso).getTime()) / 3600000;
+    if (h < 18) return 'today';
+    if (h < 42) return 'yesterday';
+    const d = Math.floor(h / 24);
+    if (d < 7) return d + 'd ago';
+    return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
+
+  return (
+    <div className="tc-note-panel card">
+      <div>
+        <div className="tc-note-title">{title}</div>
+        <div className="tc-note-sub">{subtitle} — saved &amp; shared</div>
+      </div>
+      <textarea
+        className="tc-note-area"
+        placeholder={placeholder}
+        value={note}
+        onChange={e => setNote(e.target.value)}
+        onBlur={() => { if (dirty) save(); }}
+      />
+      <div className="tc-note-foot">
+        <span className="tc-note-status">
+          {saving ? 'Saving…'
+            : msg ? msg
+            : dirty ? '\u25CF Unsaved changes'
+            : savedAt ? `Saved \u00B7 ${ago(savedAt)}`
+            : 'Not saved yet'}
+        </span>
+        <span className="tc-note-actions">
+          <button className="btn btn-outline" onClick={clear} disabled={saving || (!note && !loaded)}>Clear</button>
+          <button className="btn btn-blue" onClick={() => save()} disabled={saving || !dirty}>Save</button>
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function InventoryTab({flavors, products}) {
   const [inventory, setInventory] = useState({});  // {flavorId: {pet: {fridge, freezer, fridgeAt, freezerAt}, tc: {...}}}
   const [productInv, setProductInv] = useState({}); // {productId: {pet: {fridge, freezer, fridgeAt, freezerAt, total, totalAt}, tc: {...}}}
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [hideEmpty, setHideEmpty] = useState(false);
-  // "Take to Traverse City" shared transfer note (persisted singleton row id=1)
-  const [tcNote, setTcNote] = useState('');
-  const [tcNoteLoaded, setTcNoteLoaded] = useState('');   // last saved value, for dirty detection
-  const [tcNoteSavedAt, setTcNoteSavedAt] = useState(null);
-  const [tcNoteSaving, setTcNoteSaving] = useState(false);
-  const [tcNoteMsg, setTcNoteMsg] = useState('');
-
-  useEffect(() => {
-    (async () => {
-      try {
-        const { data } = await db('tc_transfer_notes','select',{ filters:{ id:1 } });
-        const row = (data && data[0]) || null;
-        if (row) {
-          setTcNote(row.note || '');
-          setTcNoteLoaded(row.note || '');
-          setTcNoteSavedAt(row.updated_at || null);
-        }
-      } catch (e) {
-        console.error('TC note load failed:', e.message);  // non-fatal; panel still usable
-      }
-    })();
-  }, []);
-
-  const saveTcNote = async (valueArg) => {
-    const value = valueArg !== undefined ? valueArg : tcNote;
-    setTcNoteSaving(true); setTcNoteMsg('');
-    try {
-      const now = new Date().toISOString();
-      await db('tc_transfer_notes','update',{ id:1, data:{ note:value, updated_at:now } });
-      setTcNoteLoaded(value); setTcNoteSavedAt(now); setTcNoteMsg('Saved');
-      setTimeout(()=>setTcNoteMsg(''), 2000);
-    } catch (e) {
-      setTcNoteMsg('Save failed — try again');
-      console.error('TC note save failed:', e.message);
-    } finally { setTcNoteSaving(false); }
-  };
-  const clearTcNote = async () => { setTcNote(''); await saveTcNote(''); };
-  const tcNoteDirty = tcNote !== tcNoteLoaded;
 
   useEffect(() => {
     (async () => {
@@ -2601,33 +2639,15 @@ function InventoryTab({flavors, products}) {
         })}
       </div>
 
-      {/* Take to Traverse City — shared, persisted transfer note */}
-        <div className="tc-note-panel card">
-          <div>
-            <div className="tc-note-title">📦 Take to Traverse City</div>
-            <div className="tc-note-sub">What to load for the next TC run — saved &amp; shared with both stores</div>
-          </div>
-          <textarea
-            className="tc-note-area"
-            placeholder={"e.g.\n3 Chocolate Chip\n2 Famous Sugar\n1 Monster"}
-            value={tcNote}
-            onChange={e => setTcNote(e.target.value)}
-            onBlur={() => { if (tcNoteDirty) saveTcNote(); }}
-          />
-          <div className="tc-note-foot">
-            <span className="tc-note-status">
-              {tcNoteSaving ? 'Saving…'
-                : tcNoteMsg ? tcNoteMsg
-                : tcNoteDirty ? '\u25CF Unsaved changes'
-                : tcNoteSavedAt ? `Saved \u00B7 ${fmtWhen(tcNoteSavedAt)}`
-                : 'Not saved yet'}
-            </span>
-            <span className="tc-note-actions">
-              <button className="btn btn-outline" onClick={clearTcNote} disabled={tcNoteSaving || (!tcNote && !tcNoteLoaded)}>Clear</button>
-              <button className="btn btn-blue" onClick={() => saveTcNote()} disabled={tcNoteSaving || !tcNoteDirty}>Save</button>
-            </span>
-          </div>
-        </div>
+      {/* Planning notes — free-text, persisted, shared across both stores */}
+        <NotesPanel noteKey="take_to_tc"
+          title="📦 Take to Traverse City"
+          subtitle="What to load for the next TC run"
+          placeholder={"e.g.\n3 Chocolate Chip\n2 Famous Sugar\n1 Monster"} />
+        <NotesPanel noteKey="dough_next_week"
+          title="🧑‍🍳 Dough for Next Week"
+          subtitle="Flavors to mix on the next dough days"
+          placeholder={"e.g.\n4 Chocolate Chip\n3 Famous Sugar\n2 Cake Batter\n2 Lemon"} />
       </div>
 
       {/* Products section: cookie dough, ice cream sandwiches, buttercream bags.

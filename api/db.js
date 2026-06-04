@@ -7,7 +7,7 @@ const VALID_TABLES = [
   'production_logs','transfers','sales','inventory_snapshots','manual_orders',
   'manual_order_items','product_sizes','employees','flavor_schedule',
   'products','product_ingredients','product_snapshots','product_production_logs',
-  'tc_transfer_notes'
+  'inventory_notes'
 ];
 
 module.exports = async (req, res) => {
