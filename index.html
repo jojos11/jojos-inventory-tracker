@@ -6,9 +6,20 @@
 <title>JoJo's Cookie Co. — Inventory Tracker</title>
 <link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==">
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@700&display=swap" rel="stylesheet">
-<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
-<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"></script>
+<script>
+  // Force the CLASSIC JSX runtime (global React.createElement). Without this,
+  // a newer Babel (8.x defaults to the automatic runtime) would compile our
+  // in-browser JSX into `import { jsx } from "react/jsx-runtime"`, which a
+  // plain browser can't resolve — the whole app then fails to mount (black
+  // screen). Pinning the versions above + this registered preset makes the
+  // build deterministic regardless of what unpkg's "latest" becomes.
+  Babel.registerPreset('react-classic', {
+    presets: [[Babel.availablePresets['react'], { runtime: 'classic' }]]
+  });
+</script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{--blue:#A2CCEB;--bg:#1A1A1A;--card:#242424;--border:#333;--gray:#999;--gray2:#666;--green:#4CAF50;--yellow:#FFB300;--red:#EF5350;--orange:#FF9800}
@@ -246,7 +257,7 @@ td.c{text-align:center}
 </head>
 <body>
 <div id="root"></div>
-<script type="text/babel">
+<script type="text/babel" data-presets="react-classic">
 const CIRCLE_LOGO = '/api/config'; // placeholder - will use text instead
 const { useState, useEffect, useCallback, useRef } = React;
 
